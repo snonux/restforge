@@ -1,7 +1,15 @@
 # RESTForge
 
-RESTForge is a Pebble watchapp skeleton, built with the Rebble SDK. Adapted
-from [FastForge](https://github.com/snonux/fastforge).
+RESTForge is a Pebble watchapp skeleton, built with the Rebble SDK.
+
+## Screenshots
+
+The screenshots below are **placeholders** — replace them with real emulator
+captures once the UI is fleshed out (`just screenshot` / `just screenshot-basalt`).
+
+| Pebble Round 2 (gabbro) | Pebble Time (basalt) |
+|:---:|:---:|
+| <img src="screenshots/gabbro_01_main.png" width="160"> | <img src="screenshots/basalt_01_main.png" width="100"> |
 
 ## Day-1 Setup (Fedora + Rebble SDK 4.9+)
 

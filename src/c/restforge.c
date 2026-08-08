@@ -1,8 +1,8 @@
 /* RESTForge — main watchapp entry point.
  *
- * Skeleton app adapted from FastForge. Renders a single window with a title
- * line and a live wall-clock that updates every minute via TickTimerService.
- * SELECT reloads the window as a placeholder for future menu navigation. */
+ * Renders a single window with a title line and a live wall-clock that
+ * updates every minute via TickTimerService. SELECT is a placeholder for
+ * future menu navigation. */
 
 #include <pebble.h>
 

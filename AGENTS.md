@@ -3,7 +3,6 @@ Pebble Watchapp Skeleton Development Guide
 Fedora Linux + Rebble Pebble SDK 4.9+ (August 2026)
 
 This file is the primary workflow reference for RESTForge contributors.
-The project structure is adapted from FastForge.
 
 ## 1. One-Time Initial Setup
 
@@ -74,6 +73,8 @@ Commit these project files when changed:
 - `wscript`
 - `src/c/restforge.c`
 - `src/pkjs/index.js`
+- `store/icon.svg`, `store/icon-144.png`, `store/icon-80.png`
+- `screenshots/*.png`
 - `.gitignore`
 
 Do not commit generated artifacts:
