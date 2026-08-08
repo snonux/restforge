@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RESTForge icon variant A: curly-brace JSON resource with a request arrow
+     (top, →) and a response arrow (bottom, ←) between the braces. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
+  <defs>
+    <marker id="ah" markerUnits="userSpaceOnUse" markerWidth="16" markerHeight="16" viewBox="0 0 16 16" refX="14" refY="8" orient="auto">
+      <path d="M0,1 L16,8 L0,15 Z" fill="#FFFFFF"/>
+    </marker>
+  </defs>
+  <rect width="144" height="144" rx="32" fill="#0A84FF"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <!-- left { -->
+    <path d="M 54 30 C 36 30 36 54 30 72 L 54 72"/>
+    <path d="M 54 114 C 36 114 36 90 30 72"/>
+    <!-- right } -->
+    <path d="M 90 30 C 108 30 108 54 114 72 L 90 72"/>
+    <path d="M 90 114 C 108 114 108 90 114 72"/>
+  </g>
+  <!-- request arrow (right) -->
+  <line x1="58" y1="56" x2="84" y2="56" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" marker-end="url(#ah)"/>
+  <!-- response arrow (left) -->
+  <line x1="86" y1="88" x2="60" y2="88" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" marker-end="url(#ah)"/>
+</svg>
