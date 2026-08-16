@@ -287,11 +287,12 @@ function embed(value) {
  *
  * All three substitutions below use a replacer FUNCTION rather than a plain
  * replacement string. Per the ECMAScript spec, String.prototype.replace()
- * scans a string replacement argument for special '$'-patterns ($$, $&, $`,
- * $', $<n>) regardless of whether the search pattern is a string or a regex.
+ * scans a string replacement argument for special '$'-patterns (dollar-dollar,
+ * dollar-ampersand, dollar-backquote, dollar-quote, dollar-angle-name)
+ * regardless of whether the search pattern is a string or a regex.
  * embed(backends) can contain arbitrary user-saved backend data (names,
- * URLs, secrets), so a field containing e.g. '$&' or '$`' would otherwise be
- * mis-substituted or -- in the '$`' case -- splice raw page-script text into
+ * URLs, secrets), so a field containing one of those would otherwise be
+ * mis-substituted or -- for dollar-backquote -- splice raw page-script into
  * the output, breaking the generated <script>'s syntax. Replacer functions
  * are never subject to this interpolation, so this removes the whole bug
  * class. defaultHeader/maxBackends are fixed constants from index.js today,

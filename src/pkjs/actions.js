@@ -59,7 +59,7 @@ var CONFIRMATION_TTL_MS = 60000;
 
 /* hasPending is nav.js's window into this module's one piece of state it
  * needs to know about, wired in by session.js -- see the comment on
- * `pending` above and on nav.js's idleRefreshable. */
+ * the pending action above, and on nav.js's idleRefreshable. */
 function hasPending() {
   return !!pending;
 }

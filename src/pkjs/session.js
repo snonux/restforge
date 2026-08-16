@@ -12,7 +12,7 @@
  * other's caller -- actions.js requires nav.js to render and send what it
  * decides, but nav.js requires nothing about actions.js.
  *
- * What is left here is what genuinely needs both: `activate`, because a row's
+ * What is left here is what genuinely needs both: activate(), because a row's
  * target can mean either "go somewhere" (nav.js) or "ask about doing
  * something" (actions.js), and the one piece of cross-module wiring neither
  * side can do to itself -- see the nav.setActionPendingCheck call below.
@@ -27,7 +27,7 @@ var nav = require('./nav');
 /* The idle-refresh timer has to hold off while an action question is
  * outstanding, even in the gap where the watch dismissed the confirm overlay
  * without answering it -- see the comments on nav.js's idleRefreshable and on
- * actions.js's `pending`.  nav.js cannot require actions.js to ask it
+ * the pending action in actions.js.  nav.js cannot require actions.js to ask it
  * directly: actions.js already requires nav.js, and the reverse would make
  * the two modules require each other.  So the check is wired in here, once,
  * by the module whose job is to wire the pieces together. */
