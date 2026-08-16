@@ -134,6 +134,11 @@ static void inbox_dropped(AppMessageResult reason, void *context) {
   discard_frame("inbox drop");
 }
 
+/* No automatic retry here by design (see comm.h comm_send_cmd): re-sending
+ * would need to remember the failed message, and for comm_send_answer that
+ * means holding onto a dictation transcription pointer whose owner (the
+ * DictationSession in win_prompt.c) may already be gone by the time this
+ * fires. The user's next button press re-issues the command instead. */
 static void outbox_failed(DictionaryIterator *iter, AppMessageResult reason,
                           void *context) {
   (void)iter;
