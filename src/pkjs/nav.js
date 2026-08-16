@@ -29,6 +29,7 @@ var appmessage = require('./appmessage');
 var http = require('./http');
 var live = require('./live');
 var render = require('./render');
+var quick = require('./quick');
 var settings = require('./settings');
 var siren = require('./siren');
 
@@ -169,13 +170,23 @@ function bannerFor(kind) {
 
 /* --- frames -------------------------------------------------------------- */
 
+/* The opening screen: saved shortcuts first, then the backends they came
+ * from.  Shortcuts lead the list because reaching one in a single press is
+ * the whole point of having saved it; with none saved the screen is exactly
+ * what it was before. */
 function pickerFrame(message) {
+  var shortcuts = quick.rows();
   var picker = settings.rows();
+
   rows = [];
+  for (var q = 0; q < shortcuts.length; q++) {
+    rows.push({ target: { type: 'quick', index: q } });
+  }
   for (var i = 0; i < picker.length; i++) {
     rows.push({ target: { type: 'backend', index: i } });
   }
-  if (!picker.length) {
+
+  if (!picker.length && !shortcuts.length) {
     /* Not an empty list: an empty menu is what a backend with nothing in it
      * would look like, and this is not that. */
     return { title: 'RESTForge', state: STATE_NEEDS_CONFIG, atRoot: true,
@@ -184,7 +195,7 @@ function pickerFrame(message) {
                       sublabel: 'Settings on RESTForge', kind: 'p' }] };
   }
   return { title: 'RESTForge', state: STATE_OK, atRoot: true,
-           message: message, rows: picker };
+           message: message, rows: shortcuts.concat(picker) };
 }
 
 /* capped trims the row list to what the watch can hold, and says so with a row
@@ -510,7 +521,47 @@ function refresh() {
   fetch(here.href, here.title, true);
 }
 
+/* adopt switches to a backend without fetching its root.  A shortcut jumps
+ * straight to somewhere inside a backend, so the usual "open the root first"
+ * of openBackend would be a wasted request and a screen nobody asked for. */
+function adopt(chosen) {
+  live.stop();
+  backend = chosen;
+  backendIndex = -1;
+  /* Nothing carried over, for the same reason openBackend clears it. */
+  stack = [];
+}
+
+/* openQuickDocument follows a saved document shortcut: adopt its backend,
+ * then fetch the address it saved.  The stack starts empty, so BACK from it
+ * returns to the opening screen rather than into a history nobody walked. */
+function openQuickDocument(item, chosen) {
+  adopt(chosen);
+  fetch(item.href, item.label, false);
+}
+
+/* openQuickHolder fetches the document that offers a saved action, and hands
+ * it to the callback once it is on the stack.  The action is looked up by name in
+ * whatever comes back, never at a remembered href: the server withdraws
+ * actions as its state changes, and "not offered right now" is a real answer
+ * that has to be able to surface. */
+function openQuickHolder(item, chosen, then) {
+  adopt(chosen);
+  sendLoading(item.label);
+  http.get(chosen, item.holder, function (error, result) {
+    if (error) {
+      sendFailure(error);
+      return;
+    }
+    stack = [{ entity: result.entity, href: item.holder, title: item.label }];
+    then();
+  });
+}
+
 module.exports = {
+  pickerFrame: pickerFrame,
+  openQuickDocument: openQuickDocument,
+  openQuickHolder: openQuickHolder,
   STATE_OK: STATE_OK,
   STATE_LOADING: STATE_LOADING,
   STATE_ERROR: STATE_ERROR,

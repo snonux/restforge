@@ -23,6 +23,7 @@
 var actions = require('./actions');
 var appmessage = require('./appmessage');
 var nav = require('./nav');
+var quick = require('./quick');
 
 /* The idle-refresh timer has to hold off while an action question is
  * outstanding, even in the gap where the watch dismissed the confirm overlay
@@ -62,7 +63,90 @@ function activate(index) {
     nav.fetch(target.href, row.label, false);
   } else if (target.type === 'action') {
     actions.askAction(target.name);
+  } else if (target.type === 'quick') {
+    runQuick(target.index);
   }
+}
+
+/* runQuick follows a saved shortcut.
+ *
+ * A document is fetched; an action has its holder fetched and is then looked
+ * up by name and put through the ordinary confirmation.  The shortcut skips
+ * the walking, never the deciding -- a single press from the opening screen
+ * to something that changes the world is exactly the shape this app is built
+ * to refuse. */
+function runQuick(index) {
+  var item = quick.get(index);
+  if (!item) {
+    nav.listBackends();
+    return;
+  }
+  var backend = quick.backendFor(item);
+  if (!backend) {
+    /* Kept and marked rather than dropped, so it can be removed deliberately. */
+    nav.send(nav.overlay(nav.pickerFrame('Unavailable'), item.label,
+                         'The backend this shortcut points at is no longer ' +
+                         'configured. Long-press it to remove it.'));
+    return;
+  }
+  if (item.kind === quick.KIND_DOCUMENT) {
+    nav.openQuickDocument(item, backend);
+    return;
+  }
+  nav.openQuickHolder(item, backend, function () {
+    actions.askAction(item.name);
+  });
+}
+
+/* saveQuick remembers the focused row.
+ *
+ * What is saved depends on what the row is, and in both cases it is what the
+ * server offered rather than a URL of our own: an action by name plus the
+ * address of the document offering it, a link or entity by the href it
+ * carried. */
+function saveQuick(index) {
+  var row = nav.rowAt(index);
+  var here = nav.top();
+  var backend = nav.backend();
+  if (!row || !row.target || !here || !backend) {
+    nav.sendCurrent('Cannot save');
+    return;
+  }
+
+  var item = null;
+  if (row.target.type === 'action') {
+    if (!here.href) {
+      /* An embedded document has no address, so there is nowhere to look the
+       * action up again next time. */
+      nav.sendCurrent('Cannot save');
+      return;
+    }
+    item = { label: row.label, backendName: backend.name,
+             baseUrl: backend.baseUrl, kind: quick.KIND_ACTION,
+             holder: here.href, name: row.target.name };
+  } else if (row.target.type === 'fetch') {
+    item = { label: row.label, backendName: backend.name,
+             baseUrl: backend.baseUrl, kind: quick.KIND_DOCUMENT,
+             href: row.target.href };
+  } else {
+    /* A property opens a reading window and an embedded entity has no address
+     * of its own; neither is somewhere to return to. */
+    nav.sendCurrent('Cannot save that');
+    return;
+  }
+
+  nav.sendCurrent(quick.add(item) ? 'Saved' : 'Not saved');
+}
+
+/* removeQuick drops a shortcut from the opening screen. */
+function removeQuick(index) {
+  var row = nav.rowAt(index);
+  if (!row || !row.target || row.target.type !== 'quick') {
+    nav.sendCurrent();
+    return;
+  }
+  quick.remove(row.target.index);
+  nav.listBackends('Removed');
 }
 
 /* back pops one document.  Leaving the screen an action was offered on
@@ -75,6 +159,8 @@ function back() {
 }
 
 module.exports = {
+  saveQuick: saveQuick,
+  removeQuick: removeQuick,
   noteInbox: noteInbox,
   setSeq: nav.setSeq,
   answer: actions.answer,

@@ -22,6 +22,8 @@ var CMD_BACK = 3;
 var CMD_REFRESH = 4;
 var CMD_ANSWER = 5;
 var CMD_DISMISS = 6;
+var CMD_SAVE_QUICK = 7;
+var CMD_REMOVE_QUICK = 8;
 
 /* parseConfigResponse copes with both close paths.  The phone hands back the
  * fragment of pebblejs://close#… ; the emulator hands back the query string of
@@ -61,6 +63,10 @@ function dispatch(cmd, index) {
     session.refresh();
   } else if (cmd === CMD_DISMISS) {
     session.dismissed();
+  } else if (cmd === CMD_SAVE_QUICK) {
+    session.saveQuick(index);
+  } else if (cmd === CMD_REMOVE_QUICK) {
+    session.removeQuick(index);
   }
 }
 

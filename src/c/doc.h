@@ -38,6 +38,8 @@ typedef enum {
   DocRowLink = 'l',
   DocRowAction = 'a',
   DocRowBackend = 'b',
+  /* A saved shortcut on the opening screen. */
+  DocRowQuick = 'q',
 } DocRowKind;
 
 /* What, if anything, should be shown on top of the list.

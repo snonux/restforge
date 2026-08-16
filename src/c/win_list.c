@@ -30,6 +30,7 @@ static const char *section_title(DocRowKind kind) {
     case DocRowLink: return "Links";
     case DocRowAction: return "Actions";
     case DocRowBackend: return "Backends";
+    case DocRowQuick: return "Quick";
     default: return "";
   }
 }
@@ -189,12 +190,79 @@ static void select_click(MenuLayer *menu, MenuIndex *index, void *context) {
   }
 }
 
+/* The long-press menu.
+ *
+ * Long-press used to refresh outright.  It now opens a short list, because a
+ * second verb was needed -- remembering the focused row as a shortcut -- and
+ * spending a row of every document on it would cost more than it is worth.
+ * What the list offers depends on where you are: a saved shortcut can be
+ * forgotten, anything else can be remembered. */
+static ActionMenu *s_action_menu;
+static ActionMenuLevel *s_action_level;
+static int s_long_pressed_row;
+
+static void on_refresh(ActionMenu *menu, const ActionMenuItem *item,
+                       void *context) {
+  (void)menu;
+  (void)item;
+  (void)context;
+  comm_send_cmd(CommCmdRefresh, 0);
+}
+
+static void on_save(ActionMenu *menu, const ActionMenuItem *item,
+                    void *context) {
+  (void)menu;
+  (void)item;
+  (void)context;
+  comm_send_cmd(CommCmdSaveQuick, s_long_pressed_row);
+}
+
+static void on_remove(ActionMenu *menu, const ActionMenuItem *item,
+                      void *context) {
+  (void)menu;
+  (void)item;
+  (void)context;
+  comm_send_cmd(CommCmdRemoveQuick, s_long_pressed_row);
+}
+
+static void action_menu_closed(ActionMenu *menu, const ActionMenuItem *item,
+                               void *context) {
+  (void)menu;
+  (void)item;
+  (void)context;
+  action_menu_hierarchy_destroy(s_action_level, NULL, NULL);
+  s_action_level = NULL;
+  s_action_menu = NULL;
+}
+
 static void select_long_click(MenuLayer *menu, MenuIndex *index,
                               void *context) {
   (void)menu;
-  (void)index;
   (void)context;
-  comm_send_cmd(CommCmdRefresh, 0);
+  int row = absolute_row(index);
+  if (row < 0) {
+    return;
+  }
+  s_long_pressed_row = row;
+
+  bool is_quick = doc_row_kind(row) == DocRowQuick;
+  s_action_level = action_menu_level_create(2);
+  if (is_quick) {
+    action_menu_level_add_action(s_action_level, "Remove", on_remove, NULL);
+  } else {
+    action_menu_level_add_action(s_action_level, "Add to quick menu", on_save,
+                                 NULL);
+    action_menu_level_add_action(s_action_level, "Refresh", on_refresh, NULL);
+  }
+
+  ActionMenuConfig config = (ActionMenuConfig){
+      .root_level = s_action_level,
+      .colors = { .background = GColorDarkCandyAppleRed,
+                  .foreground = GColorWhite },
+      .align = ActionMenuAlignCenter,
+      .will_close = action_menu_closed,
+  };
+  s_action_menu = action_menu_open(&config);
 }
 
 /* BACK pops the navigation stack, which lives in JS — the watch has one window

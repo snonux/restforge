@@ -72,6 +72,7 @@ test:
     node tools/test-url.js
     node tools/test-live.js
     node tools/test-render.js
+    node tools/test-quick.js
     node tools/test-nav.js
     node tools/test-actions.js
     node tools/test-session.js

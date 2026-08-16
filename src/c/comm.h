@@ -26,6 +26,9 @@ typedef enum {
   CommCmdRefresh = 4,
   CommCmdAnswer = 5,
   CommCmdDismiss = 6,
+  /* Remember the focused row as a shortcut, or forget one. */
+  CommCmdSaveQuick = 7,
+  CommCmdRemoveQuick = 8,
 } CommCmd;
 
 /* Called once a complete frame has been reassembled into the doc module. */

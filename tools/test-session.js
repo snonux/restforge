@@ -919,6 +919,92 @@ function testRootFlag() {
   assert('back at the bottom returns to the root', lastFrame().atRoot === 1);
 }
 
+/* --- the quick menu ------------------------------------------------------
+ *
+ * Save the focused row, find it on the opening screen, press it. The property
+ * being defended is that a shortcut skips the walking, not the deciding.
+ */
+
+var quick = require(path.join(__dirname, '..', 'src', 'pkjs', 'quick'));
+
+function testSaveAndRunAQuickAction() {
+  var root = openRoot();
+  quick.save([]);
+
+  session.saveQuick(indexOfRow(root, 'Brew a pot of tea'));
+  assert('saving reports it', lastFrame().message === 'Saved');
+  assert('saving asks the server nothing', requested.length === 0);
+
+  reset();
+  session.listBackends();
+  var picker = lastFrame();
+  /* Shortcuts lead the opening screen; backends follow. */
+  assert('the shortcut is first on the opening screen',
+         picker.kinds.indexOf('q') === 0);
+  assert('labelled as the server worded it',
+         labels(picker)[0] === 'Brew a pot of tea');
+
+  reset();
+  session.activate(0);
+  /* The holder is re-read so the action is looked up by name in a current
+   * document, rather than fired at a remembered href. */
+  assert('running it re-reads the document that offers it',
+         requested[0] === 'GET ' + BASE);
+  assert('and it still asks before acting', lastFrame().overlay === 1);
+  assert('the press alone sends nothing',
+         requested.join(',').indexOf('POST') < 0);
+
+  reset();
+  session.answer(true);
+  assert('confirming is what invokes it',
+         requested[0] === 'POST ' + BASE + 'brew');
+}
+
+function testQuickDocument() {
+  var root = openRoot();
+  quick.save([]);
+  session.saveQuick(indexOfRow(root, 'shelves'));
+
+  reset();
+  session.listBackends();
+  session.activate(0);
+  assert('a saved link is fetched directly',
+         requested[0] === 'GET ' + BASE + 'shelves');
+  assert('and shown', lastFrame().title === 'Shelves');
+  /* Straight to the destination: nothing walked, so BACK returns to the
+   * opening screen rather than into a history nobody visited. */
+  reset();
+  session.back();
+  assert('back from a shortcut returns to the opening screen',
+         lastFrame().kinds.indexOf('q') === 0);
+}
+
+/* A property opens a reading window; there is nowhere to return to. */
+function testUnsaveableRow() {
+  var root = openRoot();
+  quick.save([]);
+  session.saveQuick(indexOfRow(root, 'kettle'));
+  assert('a property row is refused', quick.count() === 0);
+  assert('and says so', /Cannot save/.test(lastFrame().message));
+}
+
+/* A shortcut whose backend was deleted explains itself rather than vanishing
+ * or firing at a server that is no longer configured. */
+function testShortcutToDeletedBackend() {
+  var root = openRoot();
+  quick.save([]);
+  session.saveQuick(indexOfRow(root, 'shelves'));
+  settings.save([{ name: 'other', baseUrl: 'http://elsewhere.example/',
+                   secret: 'x' }]);
+
+  session.listBackends();
+  reset();
+  session.activate(0);
+  assert('it does not reach for the old server', requested.length === 0);
+  assert('it says the backend is gone',
+         /no longer configured/.test(lastFrame().prompt));
+}
+
 function testSequenceIsEchoed() {
   setUp();
   session.setSeq(42);
@@ -961,6 +1047,10 @@ testUnconfirmedActionIsNotRetried();
 testRetryIsNotRepeated();
 testIdleRefresh();
 testRootFlag();
+testSaveAndRunAQuickAction();
+testQuickDocument();
+testUnsaveableRow();
+testShortcutToDeletedBackend();
 testSequenceIsEchoed();
 
 if (failures) {
