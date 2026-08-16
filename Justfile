@@ -79,6 +79,7 @@ test:
     node tools/test-http.js
     node tools/test-settings.js
     node tools/test-configpage.js
+    node tools/test-doc-roundtrip.js
 
 # The two greps that cannot fail loudly on their own.
 # ES5: the emulator's PKJS runs a modern V8 and accepts ES6 happily, but the
