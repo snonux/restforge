@@ -112,6 +112,10 @@ just check          # two greps that cannot fail loudly on their own
 
 `just check` is the one to pay attention to. It must print nothing:
 
+- **Secrets** — every file under the repo is scanned for the contents of any
+  `~/.*apikey*` file. Keys belong in a file outside the repo, mode 0600,
+  pasted into the settings page; never in a commit, a command line, or a log.
+
 - **ES5** — the emulator's JavaScript runtime is modern and the watch's is not,
   and the build does not transpile. The emulator is a false green for syntax;
   only this grep catches it.

@@ -51,10 +51,16 @@ Daily loop after reboot:
 3. `just fixture` in one terminal, `just logs` in another
 4. `just dev`
 
-### The two checks that cannot fail loudly
+### The three checks that cannot fail loudly
 
-`just check` must print nothing. Both of its greps guard against a mistake that
+`just check` must print nothing. Each part guards against a mistake that
 otherwise looks fine right up until it does not:
+
+- **Secrets.** `just check-secrets` scans every file under the repo, tracked or
+  not, for the contents of any `~/.*apikey*` file, and exits non-zero if it
+  finds any. It reports which file leaked and nothing about the key itself. It
+  does not scan history — that is what `git-filter-repo` is for, and the
+  history was verified clean by hand on 2026-08-16.
 
 - **ES5.** The emulator's JavaScript runtime is modern, the watch's is ES5.1,
   and the build does not transpile. Arrow functions, `const`, `let` and
@@ -115,7 +121,7 @@ Never commit:
 
 - `build/`, `*.pbw`, `*.elf`, `*.bin`, `*.o`, `*.map`
 - `.lock-waf*`, `.wafpickle*`, `config.log`
-- **anything holding an API key.** `build/config-seed.json` is the one that
+- **anything holding an API key** — `just check-secrets` enforces this. `build/config-seed.json` is the one that
   exists on purpose — it prefills the settings page for testing and is
   gitignored twice over. A key belongs in a file outside the repo, mode 0600,
   and is pasted into the settings page. Never into a commit, a command line

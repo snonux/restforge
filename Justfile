@@ -88,11 +88,35 @@ test:
 # false green and only this grep catches it.
 # Genericity: RESTForge must know Siren, HTTP and AppMessage, and nothing about
 # any particular server. Only comments may match.
-check:
+check: check-secrets
     @echo "== ES5 =="
     -grep -rnE '=>|\bconst |\blet |`|\.\.\.' src/pkjs/ src/common/ 2>/dev/null
     @echo "== genericity =="
     -grep -rniE 'f3s|power-off|fans|/status|/job|monitoring' src/
+
+# Fail if key material has leaked into the repo.
+#
+# An API key belongs in a file outside the repo, mode 0600, pasted into the
+# settings page — never in a commit, a command line (where ps can read it) or a
+# log. This checks the one thing that assertion can be checked against: the key
+# files themselves. It scans every file under the repo, tracked or not, and
+# says nothing about the key beyond which file leaked it.
+#
+# It does not scan history; that was verified once by hand and is what
+# git-filter-repo is for if it ever fails.
+check-secrets:
+    @echo "== secrets =="
+    @found=0; \
+    for f in "$HOME"/.*apikey*; do \
+        [ -s "$f" ] || continue; \
+        hits=$(grep -rlIF -f "$f" . --exclude-dir=.git 2>/dev/null); \
+        if [ -n "$hits" ]; then \
+            echo "  LEAK: material from $f appears in:"; \
+            echo "$hits" | sed 's/^/    /'; \
+            found=1; \
+        fi; \
+    done; \
+    [ $found -eq 0 ] || exit 1
 
 # Run the fixture Siren server (a second terminal).
 # Its vocabulary is deliberately unfamiliar, so browsing it demonstrates the
