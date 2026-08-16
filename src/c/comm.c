@@ -65,12 +65,21 @@ static void read_scalars(DictionaryIterator *iter) {
 /* True when the final chunk's SEQ predates the command we most recently sent
  * — session.js echoes back the SEQ of the command a reply answers (see
  * session.js setSeq/send), so an older value means the user has already
- * moved past the screen this reply describes.  A missing SEQ can only come
- * from JS that predates the field, so it is treated as current rather than
- * stale. */
+ * moved past the screen this reply describes.
+ *
+ * Two values are never stale.  A missing SEQ can only come from JS that
+ * predates the field.  And SEQ 0 means the frame answers no command at all:
+ * JS sends one unprompted when its own "ready" fires, before it has ever seen
+ * a command to echo, while the watch has already sent its opening request and
+ * moved s_seq to 1.  Discarding that one leaves the app on its blank starting
+ * screen until the user presses something — which is exactly what it did until
+ * an end-to-end run caught it. */
 static bool reply_is_stale(DictionaryIterator *iter) {
   Tuple *t = dict_find(iter, MESSAGE_KEY_SEQ);
-  return t && t->value->int32 < s_seq;
+  if (!t || t->value->int32 == 0) {
+    return false;
+  }
+  return t->value->int32 < s_seq;
 }
 
 /* complete_frame hands ownership of the reassembly buffer to doc.c. */
