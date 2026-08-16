@@ -33,7 +33,7 @@ def build(ctx):
     cached_env = ctx.env
     target_platforms = ctx.env.TARGET_PLATFORMS
     if os.environ.get('DEBUG') == '1':
-        target_platforms = ['basalt']
+        target_platforms = ['gabbro']
 
     for platform in target_platforms:
         ctx.env = ctx.all_envs[platform]

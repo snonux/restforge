@@ -22,6 +22,11 @@ build/*/pebble_app.ld.auto
 build/*/app_resources.pbpack
 build/*/system_resources.resball
 
+# Settings-page seed data — contains API secrets, never commit it.
+# build/ is already ignored; this covers a copy left anywhere else.
+config-seed.json
+*.apikey
+
 # Logs and locks
 *.log
 .lock-*

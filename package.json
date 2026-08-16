@@ -1,7 +1,7 @@
 {
   "name": "restforge",
   "author": "Paul Buetow",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "keywords": [
     "pebble-app"
   ],
@@ -12,21 +12,63 @@
     "uuid": "5e524d24-377b-4448-80c4-5f8c7dd57317",
     "sdkVersion": "3",
     "enableMultiJS": true,
+    "capabilities": [
+      "configurable"
+    ],
     "targetPlatforms": [
-      "aplite",
-      "basalt",
-      "chalk",
-      "diorite",
       "emery",
-      "flint",
       "gabbro"
     ],
     "watchapp": {
       "watchface": false
     },
-    "messageKeys": [],
+    "messageKeys": [
+      "CMD",
+      "IDX",
+      "ANSWER",
+      "ANSWER_TEXT",
+      "INBOX",
+      "SEQ",
+      "CHUNK_IDX",
+      "CHUNK_N",
+      "PAYLOAD",
+      "STATE",
+      "PROMPT_KIND",
+      "LIVE",
+      "ROOT"
+    ],
     "resources": {
-      "media": []
+      "media": [
+        {
+          "type": "font",
+          "name": "RF_BOLD_34",
+          "file": "fonts/OpenSans-Bold.ttf",
+          "characterRegex": "[ -~\u00a0-\u017f\u2010-\u2027\u20a0-\u20bf]",
+          "extended": true
+        },
+        {
+          "type": "font",
+          "name": "RF_BOLD_26",
+          "file": "fonts/OpenSans-Bold.ttf",
+          "characterRegex": "[ -~\u00a0-\u017f\u2010-\u2027\u20a0-\u20bf]",
+          "extended": true
+        },
+        {
+          "type": "font",
+          "name": "RF_BOLD_22",
+          "file": "fonts/OpenSans-Bold.ttf",
+          "characterRegex": "[ -~\u00a0-\u017f\u2010-\u2027\u20a0-\u20bf]",
+          "extended": true
+        },
+        {
+          "type": "font",
+          "name": "RF_28",
+          "file": "fonts/OpenSans-Regular.ttf",
+          "characterRegex": "[ -~\u00a0-\u017f\u2010-\u2027\u20a0-\u20bf]",
+          "extended": true
+        }
+      ]
     }
-  }
+  },
+  "description": "A generic Siren hypermedia browser for the wrist: point it at any Siren API and it renders what that API offers."
 }
