@@ -1,12 +1,15 @@
 # =============================================
-# RESTForge – Pebble app skeleton
+# RESTForge – a generic Siren hypermedia browser
 # Justfile for Fedora Linux + Pebble SDK 4.9+ (2026)
+#
+# Targets two watches and checks both every time: they differ in shape, not
+# just size. See AGENTS.md for the workflow, docs/DESIGN.md for the design.
 # =============================================
 
 # Default emulator: gabbro = Pebble Round 2 (new hardware, 260×260 round display)
-# Use 'just dev-basalt' / 'just debug-dev-basalt' for the older rectangular display.
+# Use 'just dev-emery' / 'just debug-dev-emery' for Pebble Time 2 (200×228 rectangular).
 emulator := "gabbro"
-emulator_old := "basalt"
+emulator_alt := "emery"
 
 # Default: show all available commands
 default:
@@ -39,26 +42,82 @@ dev:
     -pebble kill
     pebble build && pebble install --emulator {{emulator}}
 
-# Build + install on old rectangular display (basalt)
-dev-basalt:
+# Build + install on Pebble Time 2 (emery), rectangular
+dev-emery:
     -pebble kill
-    pebble build && pebble install --emulator {{emulator_old}}
+    pebble build && pebble install --emulator {{emulator_alt}}
 
 # Show live logs (run this in a **second** terminal)
 logs:
     pebble logs --emulator {{emulator}}
 
-# Show live logs for basalt emulator
-logs-basalt:
-    pebble logs --emulator {{emulator_old}}
+# Show live logs for emery emulator
+logs-emery:
+    pebble logs --emulator {{emulator_alt}}
 
 # Take a screenshot of the emulator
 screenshot:
     pebble screenshot --emulator {{emulator}}
 
-# Take a screenshot of the basalt emulator
-screenshot-basalt:
-    pebble screenshot --emulator {{emulator_old}}
+# Take a screenshot of the emery emulator
+screenshot-emery:
+    pebble screenshot --emulator {{emulator_alt}}
+
+# ─────────────────────────────────────────────
+# Tests and checks
+# ─────────────────────────────────────────────
+
+# Run the PebbleKit JS unit tests (node, no emulator needed)
+test:
+    node tools/test-url.js
+    node tools/test-live.js
+    node tools/test-render.js
+    node tools/test-nav.js
+    node tools/test-actions.js
+    node tools/test-session.js
+    node tools/test-siren.js
+    node tools/test-http.js
+    node tools/test-settings.js
+    node tools/test-configpage.js
+
+# The two greps that cannot fail loudly on their own.
+# ES5: the emulator's PKJS runs a modern V8 and accepts ES6 happily, but the
+# build does not transpile and the device is ES5.1 — so the emulator is a
+# false green and only this grep catches it.
+# Genericity: RESTForge must know Siren, HTTP and AppMessage, and nothing about
+# any particular server. Only comments may match.
+check:
+    @echo "== ES5 =="
+    -grep -rnE '=>|\bconst |\blet |`|\.\.\.' src/pkjs/ src/common/ 2>/dev/null
+    @echo "== genericity =="
+    -grep -rniE 'f3s|power-off|fans|/status|/job|monitoring' src/
+
+# Run the fixture Siren server (a second terminal).
+# Its vocabulary is deliberately unfamiliar, so browsing it demonstrates the
+# thing f3sctl alone cannot: that the app renders an API it has never seen.
+# Add a backend with base URL http://localhost:8731/ and secret open-sesame.
+fixture:
+    python3 tools/fake-siren-server.py 8731
+
+# ─────────────────────────────────────────────
+# Settings page
+# ─────────────────────────────────────────────
+
+# Render the settings page to build/config.html from src/pkjs/configpage.js.
+# Pass a JSON array of backends as build/config-seed.json to prefill it.
+# That file holds secrets and is gitignored — do not commit one.
+config-page:
+    node tools/gen-config-page.js build/config.html build/config-seed.json
+
+# Open the settings page against the gabbro emulator.
+# --file is needed because a desktop browser refuses to navigate to the data:
+# URI the phone gets; the page itself is identical either way.
+config: config-page
+    pebble emu-app-config --emulator {{emulator}} --file build/config.html
+
+# Open the settings page against the emery emulator
+config-emery: config-page
+    pebble emu-app-config --emulator {{emulator_alt}} --file build/config.html
 
 # ─────────────────────────────────────────────
 # Emulator control
@@ -80,11 +139,11 @@ reset-flash:
     bunzip2 -k -c ~/.pebble-sdk/SDKs/4.9.148/sdk-core/pebble/gabbro/qemu/qemu_spi_flash.bin.bz2 > ~/.pebble-sdk/4.9.148/gabbro/qemu_spi_flash.bin
     @echo "Flash reset to factory state. Run 'just dev' to reinstall."
 
-# Reset the basalt SPI flash to factory state.
-reset-flash-basalt:
+# Reset the emery SPI flash to factory state.
+reset-flash-emery:
     -pebble kill
-    bunzip2 -k -c ~/.pebble-sdk/SDKs/4.9.148/sdk-core/pebble/basalt/qemu/qemu_spi_flash.bin.bz2 > ~/.pebble-sdk/4.9.148/basalt/qemu_spi_flash.bin
-    @echo "Flash reset to factory state. Run 'just dev-basalt' to reinstall."
+    bunzip2 -k -c ~/.pebble-sdk/SDKs/4.9.148/sdk-core/pebble/emery/qemu/qemu_spi_flash.bin.bz2 > ~/.pebble-sdk/4.9.148/emery/qemu_spi_flash.bin
+    @echo "Flash reset to factory state. Run 'just dev-emery' to reinstall."
 
 # ─────────────────────────────────────────────
 # Maintenance commands
@@ -113,10 +172,10 @@ debug-dev:
     -pebble kill
     DEBUG=1 pebble build && pebble install --emulator {{emulator}}
 
-# Build + install debug app on old rectangular display (basalt)
-debug-dev-basalt:
+# Build + install debug app on Pebble Time 2 (emery), rectangular
+debug-dev-emery:
     -pebble kill
-    DEBUG=1 pebble build && pebble install --emulator {{emulator_old}}
+    DEBUG=1 pebble build && pebble install --emulator {{emulator_alt}}
 
 # ─────────────────────────────────────────────
 # Debug / Testing helpers
@@ -137,9 +196,12 @@ sdk-version:
 help:
     @echo "RESTForge development commands:"
     @echo "  just dev              → build + install on Round 2/gabbro (primary)"
-    @echo "  just dev-basalt       → build + install on old basalt display"
+    @echo "  just dev-emery       → build + install on Time 2/emery"
     @echo "  just logs             → live logs for gabbro (second terminal)"
-    @echo "  just logs-basalt      → live logs for basalt (second terminal)"
+    @echo "  just logs-emery      → live logs for emery (second terminal)"
+    @echo "  just config           → open the settings page against gabbro"
+    @echo "  just test             → PebbleKit JS unit tests (no emulator)"
+    @echo "  just check            → ES5 and genericity greps"
     @echo "  just kill             → stop the emulator"
     @echo "  just clean            → remove build files"
     @echo "  just rebuild          → clean + dev"
