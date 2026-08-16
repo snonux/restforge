@@ -94,6 +94,13 @@ which spends most of its comments on exactly this.
 
 ## Things that bit, and would again
 
+Getting a build onto real hardware has its own set, kept separately in
+[SIDELOADING.md](SIDELOADING.md). The short version: the companion app is not
+called "Pebble", the developer connection needs two switches and turns itself
+off, and `adb shell input text` corrupts a long API key into something that
+presents as an auth failure.
+
+
 - **The emulator is a false green for syntax.** Its JavaScript runtime is
   modern; the watch's is ES5.1, and the build does not transpile. Only the ES5
   grep catches this.
