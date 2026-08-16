@@ -1,79 +1,27 @@
-/* The full-screen reading window.  See win_detail.h for the rationale. */
+/* The full-screen reading window.  See win_detail.h for the rationale.
+ *
+ * The scrollable pane (heading + body, measurement, layout, click-config
+ * chaining) is shared with win_prompt.c; see win_scroll_text.h for the
+ * split.  This file supplies only what is specific to reading: no footer,
+ * and BACK dismisses locally instead of answering. */
 
 #include "win_detail.h"
 #include "comm.h"
-#include "doc.h"
 #include "layout.h"
-
-/* Breathing room around the text.  Small, because the type is large and the
- * screen is not: padding here is bought directly out of characters per line. */
-#define DETAIL_PAD 4
-
-/* Slack added below each measured block; see update_content. */
-#define DETAIL_SLACK 3
+#include "win_scroll_text.h"
 
 static Window *s_window;
-static ScrollLayer *s_scroll;
-static TextLayer *s_heading;
-static TextLayer *s_body;
+static WinScrollText s_scroll_text;
 
-/* text_width is the usable width inside the scroll view.  On a round display
- * this is layout_content_rect's inscribed rectangle: unlike a MenuLayer, a
- * ScrollLayer does not know about the shape of the screen and will happily
- * draw text into the corners, where there is no screen. */
-static int16_t text_width(GRect bounds) {
-  return (int16_t)(layout_content_rect(bounds).cw - 2 * DETAIL_PAD);
-}
-
-/* update_content re-lays the two text layers around whatever the current frame
- * carries, and sizes the scrollable area to match.  Both heights are measured
- * from the fonts rather than assumed, because the whole reason this window
- * exists is that the text did not fit somewhere it was assumed to. */
+/* update_content re-lays the pane around whatever the current frame carries.
+ * A no-op before the window has loaded once, since s_scroll_text.scroll is
+ * only set from window_load onward. */
 static void update_content(void) {
-  if (!s_scroll) {
+  if (!s_scroll_text.scroll) {
     return;
   }
   GRect bounds = layer_get_bounds(window_get_root_layer(s_window));
-  ContentRect content = layout_content_rect(bounds);
-  int16_t width = text_width(bounds);
-
-  const char *heading = doc_heading();
-  const char *body = doc_prompt();
-  text_layer_set_text(s_heading, heading);
-  text_layer_set_text(s_body, body);
-
-  /* The measured height is what the glyphs occupy; a TextLayer clips to its
-   * frame exactly, so a descender on the last line lands on the boundary and
-   * loses a row or two of pixels.  A couple of pixels of slack costs nothing
-   * in a scrolling view and is visible if it is missing. */
-  int16_t heading_h = (int16_t)(layout_text_height(heading, layout_font_row(),
-                                                   width, LAYOUT_UNBOUNDED_LINES) +
-                                DETAIL_SLACK);
-  int16_t body_h = (int16_t)(layout_text_height(body, layout_font_body(), width,
-                                                LAYOUT_UNBOUNDED_LINES) +
-                             DETAIL_SLACK);
-
-  layer_set_frame(text_layer_get_layer(s_heading),
-                  GRect(DETAIL_PAD, 0, width, heading_h));
-  layer_set_frame(text_layer_get_layer(s_body),
-                  GRect(DETAIL_PAD, (int16_t)(heading_h + DETAIL_PAD), width, body_h));
-
-  /* The trailing pad keeps the last line clear of the bottom of the screen —
-   * on a round display the bottom of the screen is a curve. */
-  int16_t total = (int16_t)(heading_h + body_h + 2 * DETAIL_PAD);
-  scroll_layer_set_content_size(s_scroll, GSize(content.cw, total));
-  scroll_layer_set_content_offset(s_scroll, GPoint(0, 0), false);
-}
-
-static TextLayer *make_text_layer(GFont font, GColor colour) {
-  TextLayer *layer = text_layer_create(GRect(0, 0, 1, 1));
-  text_layer_set_font(layer, font);
-  text_layer_set_text_color(layer, colour);
-  text_layer_set_background_color(layer, GColorClear);
-  text_layer_set_overflow_mode(layer, GTextOverflowModeWordWrap);
-  text_layer_set_text_alignment(
-      layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
-  return layer;
+  win_scroll_text_update(&s_scroll_text, layout_content_rect(bounds));
 }
 
 /* BACK dismisses this window without asking anyone -- the document underneath
@@ -84,11 +32,8 @@ static TextLayer *make_text_layer(GFont font, GColor colour) {
  * gone by the time it lands.
  *
  * Dismissal goes through win_detail_hide() rather than window_stack_remove()
- * directly, so s_heading/s_body get their text cleared first.  Those layers
- * hold raw pointers into doc.c's payload buffer, and window_unload() (which
- * would otherwise be the one to let go of them) does not run until Pebble
- * finishes animating the window off the stack -- a window that can outlive
- * the frame whose text it is still pointing at. */
+ * directly, so the pane's text gets cleared first -- see win_scroll_text.h
+ * for why that matters. */
 static void dismiss_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
@@ -96,12 +41,11 @@ static void dismiss_click(ClickRecognizerRef recognizer, void *context) {
   win_detail_hide();
 }
 
-static ClickConfigProvider s_scroll_click_config;
-
+/* UP and DOWN scroll (wired by win_scroll_text_create); BACK dismisses, via
+ * dismiss_click above. */
 static void click_config(void *context) {
-  if (s_scroll_click_config) {
-    s_scroll_click_config(context);
-  }
+  win_scroll_text_chain_click_config(s_scroll_text.prior_click_config,
+                                     context);
   window_single_click_subscribe(BUTTON_ID_BACK, dismiss_click);
 }
 
@@ -111,23 +55,12 @@ static void window_load(Window *window) {
   ContentRect content = layout_content_rect(bounds);
   window_set_background_color(window, GColorWhite);
 
-  s_scroll = scroll_layer_create(
-      GRect(content.ox, content.oy, content.cw,
-            (int16_t)(bounds.size.h - 2 * content.oy)));
-  /* UP and DOWN scroll; BACK dismisses, via dismiss_click above. */
-  scroll_layer_set_click_config_onto_window(s_scroll, window);
-  s_scroll_click_config = window_get_click_config_provider(window);
-  window_set_click_config_provider_with_context(window, click_config, s_scroll);
-  scroll_layer_set_shadow_hidden(s_scroll, true);
-  /* Paging on round: a partially visible line at the edge of a circle is
-   * unreadable, so move a screenful at a time rather than a few pixels. */
-  scroll_layer_set_paging(s_scroll, PBL_IF_ROUND_ELSE(true, false));
-
-  s_heading = make_text_layer(layout_font_row(), GColorDarkGray);
-  s_body = make_text_layer(layout_font_body(), GColorBlack);
-  scroll_layer_add_child(s_scroll, text_layer_get_layer(s_heading));
-  scroll_layer_add_child(s_scroll, text_layer_get_layer(s_body));
-  layer_add_child(root, scroll_layer_get_layer(s_scroll));
+  /* Symmetric top/bottom margin -- unlike win_prompt.c there is no footer
+   * band eating into the bottom of the screen. */
+  GRect frame = GRect(content.ox, content.oy, content.cw,
+                      (int16_t)(bounds.size.h - 2 * content.oy));
+  s_scroll_text = win_scroll_text_create(window, frame, GColorDarkGray,
+                                         GColorBlack, click_config);
 
   update_content();
 }
@@ -138,12 +71,7 @@ static void window_load(Window *window) {
  * once, at shutdown. */
 static void window_unload(Window *window) {
   (void)window;
-  text_layer_destroy(s_heading);
-  text_layer_destroy(s_body);
-  scroll_layer_destroy(s_scroll);
-  s_heading = NULL;
-  s_body = NULL;
-  s_scroll = NULL;
+  win_scroll_text_destroy(&s_scroll_text);
 }
 
 void win_detail_show(void) {
@@ -166,11 +94,9 @@ void win_detail_hide(void) {
   if (!win_detail_visible()) {
     return;
   }
-  /* A TextLayer holds the pointer it was given rather than a copy, and the
-   * strings above point into the frame buffer doc.c is about to free.  Clear
-   * them before the window can be drawn again on its way out. */
-  text_layer_set_text(s_heading, "");
-  text_layer_set_text(s_body, "");
+  /* Clear the pane's text before the window can be drawn again on its way
+   * out -- see win_scroll_text.h for why this must happen here. */
+  win_scroll_text_clear(&s_scroll_text);
   window_stack_remove(s_window, true);
 }
 

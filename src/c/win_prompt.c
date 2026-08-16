@@ -1,18 +1,18 @@
-/* The confirmation window.  See win_prompt.h for the rationale. */
+/* The confirmation window.  See win_prompt.h for the rationale.
+ *
+ * The scrollable pane (heading + body, measurement, layout, click-config
+ * chaining) is shared with win_detail.c; see win_scroll_text.h for the
+ * split.  This file supplies what is specific to confirming: the footer
+ * band, dictation, and SELECT/BACK both answering before they dismiss. */
 
 #include "win_prompt.h"
 #include "comm.h"
 #include "doc.h"
 #include "layout.h"
-
-#define PROMPT_PAD 4
-/* Slack under a measured block; see the same constant in win_detail.c. */
-#define PROMPT_SLACK 3
+#include "win_scroll_text.h"
 
 static Window *s_window;
-static ScrollLayer *s_scroll;
-static TextLayer *s_heading;
-static TextLayer *s_body;
+static WinScrollText s_scroll_text;
 static Layer *s_footer;
 
 /* answered guards against reporting twice.  BACK both answers and pops, and
@@ -27,10 +27,6 @@ static DictationSession *s_dictation;
  * enough that the buffer is not worth worrying about. */
 #define TRANSCRIPT_MAX 256
 #endif
-
-static int16_t text_width(GRect bounds) {
-  return (int16_t)(layout_content_rect(bounds).cw - 2 * PROMPT_PAD);
-}
 
 /* True when the question needs a spoken value rather than a yes or no. */
 static bool wants_text(void) {
@@ -58,45 +54,15 @@ static void draw_footer(Layer *layer, GContext *ctx) {
                      GTextAlignmentCenter, NULL);
 }
 
+/* update_content re-lays the pane around whatever the current frame carries.
+ * A no-op before the window has loaded once, since s_scroll_text.scroll is
+ * only set from window_load onward. */
 static void update_content(void) {
-  if (!s_scroll) {
+  if (!s_scroll_text.scroll) {
     return;
   }
   GRect bounds = layer_get_bounds(window_get_root_layer(s_window));
-  ContentRect content = layout_content_rect(bounds);
-  int16_t width = text_width(bounds);
-
-  const char *heading = doc_heading();
-  const char *body = doc_prompt();
-  text_layer_set_text(s_heading, heading);
-  text_layer_set_text(s_body, body);
-
-  int16_t heading_h = (int16_t)(layout_text_height(heading, layout_font_row(),
-                                                   width, LAYOUT_UNBOUNDED_LINES) +
-                                PROMPT_SLACK);
-  int16_t body_h = (int16_t)(layout_text_height(body, layout_font_body(), width,
-                                                LAYOUT_UNBOUNDED_LINES) +
-                             PROMPT_SLACK);
-
-  layer_set_frame(text_layer_get_layer(s_heading),
-                  GRect(PROMPT_PAD, 0, width, heading_h));
-  layer_set_frame(text_layer_get_layer(s_body),
-                  GRect(PROMPT_PAD, (int16_t)(heading_h + PROMPT_PAD), width, body_h));
-
-  int16_t total = (int16_t)(heading_h + body_h + 2 * PROMPT_PAD);
-  scroll_layer_set_content_size(s_scroll, GSize(content.cw, total));
-  scroll_layer_set_content_offset(s_scroll, GPoint(0, 0), false);
-}
-
-static TextLayer *make_text_layer(GFont font, GColor colour) {
-  TextLayer *layer = text_layer_create(GRect(0, 0, 1, 1));
-  text_layer_set_font(layer, font);
-  text_layer_set_text_color(layer, colour);
-  text_layer_set_background_color(layer, GColorClear);
-  text_layer_set_overflow_mode(layer, GTextOverflowModeWordWrap);
-  text_layer_set_text_alignment(
-      layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
-  return layer;
+  win_scroll_text_update(&s_scroll_text, layout_content_rect(bounds));
 }
 
 static void answer_text(bool confirmed, const char *text) {
@@ -178,14 +144,12 @@ static void back_click(ClickRecognizerRef recognizer, void *context) {
   win_prompt_hide();
 }
 
-static ClickConfigProvider s_scroll_click_config;
-
+/* UP and DOWN keep scrolling (wired by win_scroll_text_create) — the
+ * sentence being confirmed is often longer than the screen, and it is
+ * exactly the text that must be read. */
 static void click_config(void *context) {
-  /* UP and DOWN keep scrolling — the sentence being confirmed is often longer
-   * than the screen, and it is exactly the text that must be read. */
-  if (s_scroll_click_config) {
-    s_scroll_click_config(context);
-  }
+  win_scroll_text_chain_click_config(s_scroll_text.prior_click_config,
+                                     context);
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
   window_single_click_subscribe(BUTTON_ID_BACK, back_click);
 }
@@ -197,20 +161,12 @@ static void window_load(Window *window) {
   int16_t footer_h = layout_footer_height();
   window_set_background_color(window, GColorWhite);
 
-  s_scroll = scroll_layer_create(
-      GRect(content.ox, content.oy, content.cw,
-            (int16_t)(bounds.size.h - content.oy - footer_h)));
-  scroll_layer_set_click_config_onto_window(s_scroll, window);
-  s_scroll_click_config = window_get_click_config_provider(window);
-  window_set_click_config_provider_with_context(window, click_config, s_scroll);
-  scroll_layer_set_shadow_hidden(s_scroll, true);
-  scroll_layer_set_paging(s_scroll, PBL_IF_ROUND_ELSE(true, false));
-
-  s_heading = make_text_layer(layout_font_row(), GColorDarkCandyAppleRed);
-  s_body = make_text_layer(layout_font_body(), GColorBlack);
-  scroll_layer_add_child(s_scroll, text_layer_get_layer(s_heading));
-  scroll_layer_add_child(s_scroll, text_layer_get_layer(s_body));
-  layer_add_child(root, scroll_layer_get_layer(s_scroll));
+  /* Bottom margin is the footer band, not a symmetric inset -- unlike
+   * win_detail.c, which has no footer. */
+  GRect frame = GRect(content.ox, content.oy, content.cw,
+                      (int16_t)(bounds.size.h - content.oy - footer_h));
+  s_scroll_text = win_scroll_text_create(
+      window, frame, GColorDarkCandyAppleRed, GColorBlack, click_config);
 
   s_footer = layer_create(GRect(0, (int16_t)(bounds.size.h - footer_h),
                                 bounds.size.w, footer_h));
@@ -222,13 +178,8 @@ static void window_load(Window *window) {
 
 static void window_unload(Window *window) {
   (void)window;
-  text_layer_destroy(s_heading);
-  text_layer_destroy(s_body);
-  scroll_layer_destroy(s_scroll);
+  win_scroll_text_destroy(&s_scroll_text);
   layer_destroy(s_footer);
-  s_heading = NULL;
-  s_body = NULL;
-  s_scroll = NULL;
   s_footer = NULL;
 }
 
@@ -250,9 +201,9 @@ void win_prompt_show(void) {
 
 /* win_prompt_hide is the only path that may remove s_window: every button and
  * dictation handler in this file answers first (if it hasn't already) and
- * then calls here rather than window_stack_remove() directly, so the text
- * layers are always cleared before the window can be redrawn on its way off
- * the stack -- see the note on s_heading/s_body's text-clearing below.
+ * then calls here rather than window_stack_remove() directly, so the pane's
+ * text is always cleared before the window can be redrawn on its way off the
+ * stack -- see win_scroll_text.h for why that matters.
  *
  * restforge.c also calls this directly, without an answer, when JS sends a
  * frame that supersedes an unanswered prompt: setting s_answered here is what
@@ -264,14 +215,7 @@ void win_prompt_hide(void) {
     return;
   }
   s_answered = true;
-  /* s_heading/s_body point directly into doc.c's payload buffer, which is
-   * freed unconditionally on the next completed AppMessage frame -- well
-   * before window_unload() runs, since that only fires once Pebble finishes
-   * animating this window off the stack.  Clearing the text here, before the
-   * window starts that animation, is what keeps the layers from being
-   * redrawn against freed memory in the meantime. */
-  text_layer_set_text(s_heading, "");
-  text_layer_set_text(s_body, "");
+  win_scroll_text_clear(&s_scroll_text);
   window_stack_remove(s_window, true);
 }
 
