@@ -46,10 +46,12 @@
 /// action's fields, confirming it, retrying a `409` — and everything to do
 /// with a notice or an overlay laid on top of a frame by an action's outcome
 /// (`nav.js`'s `setNotice`/`applyNotice`/`overlay`), following work that
-/// outlives its request (`live.js`), and the backend picker and saved
-/// shortcuts (`quick.js`, already `home_screen.dart`'s job on this port —
-/// see that file's module comment). A coordinator wiring this module to
-/// those (`nav.js`'s `session.js`) is its own future task too.
+/// outlives its request (`live.js`), and the backend picker itself
+/// (`home_screen.dart`'s job). [adopt] exists for exactly one caller outside
+/// this file — `session.dart`'s `runQuick` (task x11), the coordinator that
+/// composes this module with `quick_service.dart` and the action pipeline to
+/// run a saved shortcut, mirroring `nav.js`'s own `adopt`/`openQuickDocument`/
+/// `openQuickHolder`.
 ///
 /// **The idle-refresh clock** (`nav.js`'s `scheduleIdle`/`idleRefresh`/
 /// `idleRefreshable`) *is* owned here, and re-reads the document on top of
@@ -320,6 +322,21 @@ class NavService extends ChangeNotifier with WidgetsBindingObserver {
   /// only [state]/[failure] change.
   Future<void> fetch(String href, {String title = ''}) =>
       _fetch(href, title: title, replace: false);
+
+  /// Switches to [backend] without fetching its root — mirrors `adopt` in
+  /// `nav.js`. A saved shortcut (`session.dart`'s `runQuick`, task x11) jumps
+  /// straight to somewhere inside a backend, so paying for the root fetch
+  /// [openRoot] always makes would be a wasted request and a screen nobody
+  /// asked for. The stack starts empty exactly as [openRoot] leaves it, so
+  /// [canGoBack] is false and a subsequent [back] falls through to whatever
+  /// screen opened this one, rather than into a history nobody walked.
+  void adopt(Backend backend) {
+    _stack.clear();
+    _backend = backend;
+    _state = DocumentState.ok;
+    _failure = null;
+    _notify();
+  }
 
   /// Re-fetches the document on top of the stack and replaces it in place.
   /// Mirrors `refresh` in `nav.js`. An embedded document has no address of

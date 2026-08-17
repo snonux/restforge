@@ -99,12 +99,25 @@
 /// in [ConfirmationSheetHost], which owns showing/hiding the modal sheet —
 /// see that file's module comment for why that wiring is one line here and
 /// everything else lives there.
+///
+/// **Saving a shortcut** (task x11): a long-press on [_LinkRow] or
+/// [_ActionRow] — never [_PropertyRow] or [_EntityRow], which
+/// [SessionService.saveQuick] would refuse anyway, see its own doc comment
+/// — calls [SessionService.saveQuick] and reports the outcome with a
+/// [SnackBar]. This is the one row gesture besides a tap this file adds on
+/// its own rather than leaving entirely to [SessionService]: a long-press
+/// has nothing to do with [render.RowTarget] (activating a row and saving
+/// it as a shortcut are two independent things a row supports), so, unlike
+/// a tap, it is not part of the "this screen never inspects a target
+/// itself" rule above — [_saveQuickShortcut] only decides *when* to call
+/// [SessionService.saveQuick], never what a row means.
 library;
 
 import 'package:flutter/material.dart';
 
 import '../models/failure.dart';
 import '../services/nav_service.dart' show DocumentState;
+import '../services/quick_service.dart' show QuickService;
 import '../services/render_service.dart' as render;
 import '../services/session.dart';
 import 'confirmation_sheet.dart';
@@ -559,6 +572,7 @@ class _RowList extends StatelessWidget {
           key: ValueKey('row-${row.kind.name}-$index'),
           row: row,
           onTap: () => session.activate(row.target),
+          onLongPress: () => _saveQuickShortcut(context, session, row),
         );
       },
     );
@@ -567,12 +581,23 @@ class _RowList extends StatelessWidget {
 
 /// Picks the row widget for [render.Row.kind] — see the module comment on
 /// why each kind gets its own look and feel rather than one tile styled by a
-/// switch on a colour.
+/// switch on a colour. [onLongPress] (task x11's save-a-shortcut gesture) is
+/// wired only into [_LinkRow] and [_ActionRow]: a property opens a reading
+/// view and a sub-entity has no address of its own, and
+/// [SessionService.saveQuick] refuses both anyway (see its doc comment), so
+/// [_PropertyRow]/[_EntityRow] are left with the plain tap they already had
+/// rather than offering a gesture that would always report "cannot save".
 class _RowTile extends StatelessWidget {
-  const _RowTile({super.key, required this.row, required this.onTap});
+  const _RowTile({
+    super.key,
+    required this.row,
+    required this.onTap,
+    required this.onLongPress,
+  });
 
   final render.Row row;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -582,11 +607,37 @@ class _RowTile extends StatelessWidget {
       case render.RowKind.entity:
         return _EntityRow(row: row, onTap: onTap);
       case render.RowKind.link:
-        return _LinkRow(row: row, onTap: onTap);
+        return _LinkRow(row: row, onTap: onTap, onLongPress: onLongPress);
       case render.RowKind.action:
-        return _ActionRow(row: row, onTap: onTap);
+        return _ActionRow(row: row, onTap: onTap, onLongPress: onLongPress);
     }
   }
+}
+
+/// [SessionService.saveQuick] for [row], reported with a [SnackBar] —
+/// [QuickSaveOutcome.saved]/[QuickSaveOutcome.full]/
+/// [QuickSaveOutcome.notSaveable] each get their own wording so "saved",
+/// "the list is full" (`QuickService.maxQuick`, `pebble/docs/DESIGN.md`-style
+/// "surface the bound rather than dropping it silently") and "this can't be
+/// saved" are never mistaken for one another. The [ScaffoldMessenger] is
+/// looked up before the `await` (`context` is not used after it) — the
+/// standard guard against using a possibly-disposed [BuildContext] once
+/// [SessionService.saveQuick]'s future completes.
+Future<void> _saveQuickShortcut(
+  BuildContext context,
+  SessionService session,
+  render.Row row,
+) async {
+  final messenger = ScaffoldMessenger.of(context);
+  final outcome = await session.saveQuick(row);
+  final text = switch (outcome) {
+    QuickSaveOutcome.saved => 'Saved "${row.label}" as a shortcut',
+    QuickSaveOutcome.full =>
+      'Already holding ${QuickService.maxQuick} shortcuts — remove one '
+          'first',
+    QuickSaveOutcome.notSaveable => 'This cannot be saved as a shortcut',
+  };
+  messenger.showSnackBar(SnackBar(content: Text(text)));
 }
 
 /// A property row: read-only, so it looks and behaves like nothing more than
@@ -644,10 +695,15 @@ class _EntityRow extends StatelessWidget {
 /// but a link is Siren's own separate vocabulary, so the icon still says
 /// which one this is.
 class _LinkRow extends StatelessWidget {
-  const _LinkRow({required this.row, required this.onTap});
+  const _LinkRow({
+    required this.row,
+    required this.onTap,
+    required this.onLongPress,
+  });
 
   final render.Row row;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -659,6 +715,7 @@ class _LinkRow extends StatelessWidget {
           : Text(row.sublabel, maxLines: 1, overflow: TextOverflow.ellipsis),
       trailing: const Icon(Icons.chevron_right),
       onTap: onTap,
+      onLongPress: onLongPress,
     );
   }
 }
@@ -671,10 +728,15 @@ class _LinkRow extends StatelessWidget {
 /// acting" gets a chance to show a confirmation (task u11, not built here —
 /// see the module comment).
 class _ActionRow extends StatelessWidget {
-  const _ActionRow({required this.row, required this.onTap});
+  const _ActionRow({
+    required this.row,
+    required this.onTap,
+    required this.onLongPress,
+  });
 
   final render.Row row;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -687,6 +749,7 @@ class _ActionRow extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
           onTap: onTap,
+          onLongPress: onLongPress,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             child: Row(

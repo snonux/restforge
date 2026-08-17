@@ -25,7 +25,12 @@
 // testNavigatingAwayStopsWatching (the invoke-outcome -> live-watch glue,
 // and stopping it on back()), and the nav.js/actions.js wiring
 // testIdleRefresh exists to pin translated to this file's own
-// setActionPendingCheck construction-time call.
+// setActionPendingCheck construction-time call. Also matched now (task
+// x11): testSaveAndRunAQuickAction/testQuickDocument/testUnsaveableRow/
+// testShortcutToDeletedBackend -- saveQuick()/runQuick() are this file's
+// own composition of quick_service.dart with nav_service.dart/
+// action_service.dart, exactly the kind of glue this file's tests are for
+// (see the module comment on saveQuick/runQuick).
 //
 // Deliberately NOT ported (AppMessage/PebbleKit-wire-protocol-specific, or
 // exercising a module this file only composes rather than reimplements --
@@ -51,10 +56,6 @@
 //    single, final InvokeOutcome that comes back afterwards.
 //  - testDefaultsAreUsedWithoutAsking, testSeveralMissingFieldsAreRefused:
 //    fillFields()'s own decision, already pinned in action_service_test.dart.
-//  - testSaveAndRunAQuickAction, testQuickDocument, testUnsaveableRow,
-//    testShortcutToDeletedBackend: quick.js's port (quick_service.dart)
-//    does not exist on this port yet -- tasks w11/x11, not this one. See
-//    session.dart's module comment.
 //  - testSequenceIsEchoed, and everything about AppMessage chunking/row
 //    indices the harness in test-session.js decodes to make its other
 //    assertions: no wire protocol exists on this port to test.
@@ -70,9 +71,11 @@ import 'package:restforge/services/action_service.dart';
 import 'package:restforge/services/http_service.dart';
 import 'package:restforge/services/live_service.dart';
 import 'package:restforge/services/nav_service.dart';
+import 'package:restforge/services/quick_service.dart';
 import 'package:restforge/services/render_service.dart';
 import 'package:restforge/services/session.dart';
 import 'package:restforge/services/settings_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 const String base = 'http://pantry.example/';
 
@@ -292,11 +295,20 @@ class Env {
       now: this.timers.now,
       createTimer: this.timers.createTimer,
     );
+    // A real SettingsService/QuickService, not a fake: backendFor() is
+    // quick_service.dart's own storage-and-resolution logic, and the point
+    // of these tests is that session.dart composes it correctly, not that
+    // it is reimplemented here. secretStore is in-memory, exactly as
+    // home_screen_test.dart's own copy of this fake -- no secret round
+    // trips through a real Keystore in a unit test.
+    settings = SettingsService(secretStore: _InMemorySecretStore());
+    quick = QuickService(settings: settings);
     session = SessionService(
       http: httpService,
       nav: nav,
       actions: actions,
       live: live,
+      quick: quick,
     );
   }
 
@@ -334,6 +346,8 @@ class Env {
   late final NavService nav;
   late final ActionService actions;
   late final LiveService live;
+  late final SettingsService settings;
+  late final QuickService quick;
   late final SessionService session;
 
   void reset() {
@@ -348,9 +362,46 @@ class Env {
     reset();
     return {for (final row in session.document!.rows) row.label: row.target};
   }
+
+  /// Opens [backend] and returns the *rows* of its root document, keyed by
+  /// label -- unlike [openRoot], for tests that call [SessionService.saveQuick],
+  /// which needs the whole [Row] (label and target both), not just the
+  /// target [SessionService.activate] alone needs.
+  Future<Map<String, Row>> openRootRows() async {
+    await session.openBackend(backend);
+    reset();
+    return {for (final row in session.document!.rows) row.label: row};
+  }
+}
+
+/// In-memory [SecretStore] fake -- see home_screen_test.dart, the original
+/// of this pattern. Duplicated for the same reason that file gives: no
+/// other coupling between the two, and this is a handful of lines.
+class _InMemorySecretStore implements SecretStore {
+  final Map<String, String> data = {};
+
+  @override
+  Future<String?> read(String key) async => data[key];
+
+  @override
+  Future<void> write(String key, String value) async {
+    data[key] = value;
+  }
+
+  @override
+  Future<void> delete(String key) async {
+    data.remove(key);
+  }
 }
 
 void main() {
+  setUp(() {
+    // QuickService/SettingsService are backed by shared_preferences; a
+    // fresh mock store per test keeps a shortcut saved in one test from
+    // leaking into the next.
+    SharedPreferences.setMockInitialValues({});
+  });
+
   group('activate() dispatches by target type', () {
     test('a fetch target follows the href and shows the document', () async {
       final env = Env();
@@ -777,5 +828,190 @@ void main() {
         reason: 'once nothing is pending, the idle clock schedules again',
       );
     });
+  });
+
+  group('saved shortcuts (saveQuick/runQuick)', () {
+    test(
+      'saving an action asks the server nothing; running it re-reads the '
+      'holder and still asks before acting',
+      () async {
+        final env = Env();
+        final rows = await env.openRootRows();
+        await env.settings.saveBackends([backend]);
+
+        final saveOutcome = await env.session.saveQuick(
+          rows['Brew a pot of tea']!,
+        );
+        expect(saveOutcome, QuickSaveOutcome.saved);
+        expect(env.requested, isEmpty, reason: 'saving asks the server nothing');
+
+        final saved = (await env.quick.load()).single;
+        env.reset();
+
+        final runOutcome = await env.session.runQuick(saved);
+        expect(runOutcome, QuickRunOutcome.opened);
+        expect(
+          env.requested,
+          ['GET $base'],
+          reason:
+              'the holder is re-read so the action is looked up by name '
+              'in a current document, rather than fired at a remembered '
+              'href',
+        );
+        expect(
+          env.session.question,
+          isA<ConfirmQuestion>(),
+          reason: 'it still asks before acting, exactly as a hand-pressed '
+              'action would',
+        );
+        expect(
+          env.requested.any((r) => r.startsWith('POST')),
+          isFalse,
+          reason: 'the press alone sends nothing',
+        );
+
+        env.reset();
+        await env.session.answer(true);
+        expect(
+          env.requested.first,
+          'POST ${base}brew',
+          reason: 'confirming is what invokes it',
+        );
+      },
+    );
+
+    test(
+      'saving a link and running it fetches it directly, with nothing to '
+      'go back to',
+      () async {
+        final env = Env();
+        final rows = await env.openRootRows();
+        await env.settings.saveBackends([backend]);
+
+        final saveOutcome = await env.session.saveQuick(rows['shelves']!);
+        expect(saveOutcome, QuickSaveOutcome.saved);
+
+        final saved = (await env.quick.load()).single;
+        env.reset();
+
+        final runOutcome = await env.session.runQuick(saved);
+        expect(runOutcome, QuickRunOutcome.opened);
+        expect(env.requested, ['GET ${base}shelves']);
+        expect(env.session.document?.title, 'Shelves');
+        expect(
+          env.session.canGoBack,
+          isFalse,
+          reason:
+              'straight to the destination: nothing was walked, so there '
+              'is no history to pop back through',
+        );
+      },
+    );
+
+    test('a property row cannot be a shortcut, and nothing is stored', () async {
+      final env = Env();
+      final rows = await env.openRootRows();
+
+      final outcome = await env.session.saveQuick(rows['kettle']!);
+
+      expect(outcome, QuickSaveOutcome.notSaveable);
+      expect(await env.quick.count(), 0);
+    });
+
+    test(
+      'an already-embedded sub-entity row cannot be a shortcut either',
+      () async {
+        final env = Env();
+        final rows = await env.openRootRows();
+
+        final outcome = await env.session.saveQuick(rows['Top shelf']!);
+
+        expect(outcome, QuickSaveOutcome.notSaveable);
+        expect(await env.quick.count(), 0);
+      },
+    );
+
+    test(
+      'a shortcut to a backend that is no longer configured explains '
+      'itself rather than reaching for it',
+      () async {
+        final env = Env();
+        final rows = await env.openRootRows();
+        await env.settings.saveBackends([backend]);
+        await env.session.saveQuick(rows['shelves']!);
+        final saved = (await env.quick.load()).single;
+
+        await env.settings.saveBackends([
+          const Backend(
+            name: 'other',
+            baseUrl: 'http://elsewhere.example/',
+            secret: 'x',
+          ),
+        ]);
+        env.reset();
+
+        final outcome = await env.session.runQuick(saved);
+
+        expect(outcome, QuickRunOutcome.backendMissing);
+        expect(
+          env.requested,
+          isEmpty,
+          reason: 'it does not reach for the old server',
+        );
+      },
+    );
+
+    test(
+      'saving past MAX_QUICK is refused rather than silently dropped',
+      () async {
+        final env = Env();
+        final rows = await env.openRootRows();
+        for (var i = 0; i < QuickService.maxQuick; i++) {
+          await env.quick.add(
+            QuickItem(
+              label: 'n$i',
+              baseUrl: base,
+              kind: QuickKind.document,
+              href: '/n$i',
+            ),
+          );
+        }
+
+        final outcome = await env.session.saveQuick(rows['shelves']!);
+
+        expect(outcome, QuickSaveOutcome.full);
+        expect(await env.quick.count(), QuickService.maxQuick);
+      },
+    );
+
+    test(
+      'an action shortcut whose action the server no longer offers reports '
+      'that rather than doing nothing',
+      () async {
+        final env = Env();
+        final rows = await env.openRootRows();
+        await env.settings.saveBackends([backend]);
+        await env.session.saveQuick(rows['Brew a pot of tea']!);
+        final saved = (await env.quick.load()).single;
+        // The next fetch of the holder no longer offers "brew" at all.
+        env.routes['GET $base'] = Route(
+          body: {
+            ...root,
+            'actions': const <Map<String, dynamic>>[],
+          },
+        );
+        env.reset();
+
+        final outcome = await env.session.runQuick(saved);
+
+        expect(outcome, QuickRunOutcome.opened);
+        expect(env.session.notice, isA<ActionWithdrawn>());
+        expect(
+          env.session.question,
+          isNull,
+          reason: 'a withdrawn action is a real answer, not a question',
+        );
+      },
+    );
   });
 }

@@ -403,6 +403,62 @@ void main() {
     });
   });
 
+  group('adopt', () {
+    // adopt() exists for exactly one caller, session.dart's runQuick (task
+    // x11) -- see this method's own doc comment for why a saved shortcut
+    // must not pay for the root fetch openRoot() always makes.
+    test('switches backend without fetching, discarding the old stack', () async {
+      final env = Env();
+      await env.nav.openRoot(backend);
+      final target =
+          rowNamed(env.nav.document!, 'shelves').target as FetchTarget;
+      await env.nav.fetch(target.href, title: 'shelves');
+      expect(env.nav.canGoBack, isTrue);
+      env.reset();
+
+      const otherBase = 'https://other.example/';
+      final other = Backend(name: 'other', baseUrl: otherBase, secret: 'x');
+
+      env.nav.adopt(other);
+
+      expect(env.requested, isEmpty, reason: 'adopt fetches nothing');
+      expect(env.nav.backend, other);
+      expect(env.nav.document, isNull, reason: 'the old stack is gone');
+      expect(env.nav.canGoBack, isFalse);
+      expect(env.nav.state, DocumentState.ok);
+    });
+
+    test('a fetch after adopt pushes onto a fresh, one-frame stack', () async {
+      final env = Env();
+      final other = Backend(
+        name: 'other',
+        baseUrl: 'https://other.example/',
+        secret: 'x',
+      );
+      env.routes['https://other.example/somewhere'] = {
+        'title': 'Elsewhere',
+        'links': [
+          {
+            'rel': ['self'],
+            'href': '/somewhere',
+          },
+        ],
+      };
+
+      env.nav.adopt(other);
+      await env.nav.fetch('https://other.example/somewhere', title: 'x');
+
+      expect(env.nav.document?.title, 'Elsewhere');
+      expect(
+        env.nav.canGoBack,
+        isFalse,
+        reason:
+            'straight to the destination: nothing was walked to get here, '
+            'so there is no history to pop back through',
+      );
+    });
+  });
+
   group('a failed request', () {
     // This is the invariant pebble/docs/DESIGN.md calls "A failed request is
     // not an answer": the document already on screen must survive exactly

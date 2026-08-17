@@ -14,9 +14,16 @@
 // does with an empty vs. a populated configuration, rather than one check
 // of fixed text.
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:restforge/screens/document_screen.dart';
 import 'package:restforge/screens/home_screen.dart';
+import 'package:restforge/services/http_service.dart';
+import 'package:restforge/services/quick_service.dart';
 import 'package:restforge/services/settings_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -148,5 +155,240 @@ void main() {
     await tester.pump();
 
     expect(observer.pushCount, before + 1);
+  });
+
+  group('saved shortcuts (x11)', () {
+    // Task x11's "list them, run one, remove one" half, at the widget
+    // layer. The storage and the runQuick composition underneath are
+    // already pinned in quick_service_test.dart and session_test.dart; this
+    // proves the opening screen renders the saved rows, hands a run to
+    // SessionService.runQuick (navigating on success, reporting a gone
+    // backend instead), and removes one with a report -- never silent on
+    // any of the three, per this task's own rule.
+    //
+    // A real [SettingsService] and [QuickService] over the mocked
+    // preferences and the in-memory secret store, so what the screen reads
+    // matches the real normalise/cap behaviour -- the same pattern the
+    // tests above use for the backend list.
+
+    const String base = 'http://bench.example/';
+
+    /// A Siren document the run test fetches when it follows a saved
+    /// document shortcut's href. Distinct properties so the assertion can
+    /// target what only DocumentScreen would show.
+    Map<String, dynamic> catalogueBody() => {
+      'class': ['catalogue'],
+      'title': 'Catalogue',
+      'properties': {'itemCount': 42},
+    };
+
+    Future<void> pumpHomeWith(
+      WidgetTester tester, {
+      required QuickService quick,
+      HttpService? http,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorObservers: [observer],
+          home: HomeScreen(
+            settingsService: settings,
+            quickService: quick,
+            httpService: http,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a saved shortcut is listed under a Shortcuts header', (
+      tester,
+    ) async {
+      await settings.saveBackends([
+        const Backend(name: 'bench', baseUrl: base, secret: 'k'),
+      ]);
+      final quick = QuickService(settings: settings);
+      await quick.add(
+        const QuickItem(
+          label: 'Catalogue',
+          baseUrl: base,
+          kind: QuickKind.document,
+          href: '/catalogue',
+        ),
+      );
+
+      await pumpHomeWith(tester, quick: quick);
+
+      expect(find.text('Shortcuts'), findsOneWidget);
+      // The shortcut tile shows its label...
+      expect(find.text('Catalogue'), findsOneWidget);
+      // ...and the backend's *current* name as the subtitle, resolved by
+      // base URL -- scoped to the shortcut tile so the backend list's own
+      // 'bench' row (which is also legitimately present) does not muddle
+      // the assertion.
+      final shortcutTile = find.ancestor(
+        of: find.text('Catalogue'),
+        matching: find.byType(ListTile),
+      );
+      expect(
+        find.descendant(of: shortcutTile, matching: find.text('bench')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'a shortcut whose backend has been removed is shown as gone, not '
+      'dropped',
+      (tester) async {
+        // Kept and marked, not silently dropped -- mirrors quick.js's rows()
+        // and quick_service.dart's module comment: something the user saved
+        // going missing without explanation is worse than a row that says so.
+        final quick = QuickService(settings: settings);
+        await quick.add(
+          const QuickItem(
+            label: 'Orphan',
+            baseUrl: base,
+            kind: QuickKind.document,
+            href: '/catalogue',
+          ),
+        );
+        // No backend configured for `base`.
+
+        await pumpHomeWith(tester, quick: quick);
+
+        expect(find.text('Shortcuts'), findsOneWidget);
+        expect(find.text('Orphan'), findsOneWidget);
+        expect(find.text('Backend removed'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'running a document shortcut fetches its href and opens the document',
+      (tester) async {
+        await settings.saveBackends([
+          const Backend(name: 'bench', baseUrl: base, secret: 'k'),
+        ]);
+        final quick = QuickService(settings: settings);
+        await quick.add(
+          const QuickItem(
+            label: 'Catalogue',
+            baseUrl: base,
+            kind: QuickKind.document,
+            href: '/catalogue',
+          ),
+        );
+
+        final client = MockClient((request) async {
+          expect(request.method, 'GET');
+          expect(request.url.toString(), '${base}catalogue');
+          return http.Response(
+            jsonEncode(catalogueBody()),
+            200,
+            headers: const {'content-type': 'application/json'},
+          );
+        });
+        final httpService = HttpService(client: client, log: (_) {});
+
+        await pumpHomeWith(tester, quick: quick, http: httpService);
+        final before = observer.pushCount;
+
+        await tester.tap(find.text('Catalogue'));
+        await tester.pumpAndSettle();
+
+        // runQuick opened the backend, fetched the href, and the screen
+        // pushed DocumentScreen to render it.
+        expect(observer.pushCount, before + 1);
+        expect(find.byType(DocumentScreen), findsOneWidget);
+        // A property only the fetched document carries -- the shortcut tile
+        // behind it does not.
+        expect(find.text('itemCount'), findsOneWidget);
+
+        // Pop the document so _runShortcut's awaited push completes and the
+        // session it built is disposed -- otherwise NavService's idle-refresh
+        // timer stays pending and the test framework rejects the leak.
+        await tester.tap(find.byType(BackButton));
+        await tester.pumpAndSettle();
+      },
+    );
+
+    testWidgets(
+      'running a shortcut whose backend is gone reports it and does not '
+      'navigate',
+      (tester) async {
+        final quick = QuickService(settings: settings);
+        await quick.add(
+          const QuickItem(
+            label: 'Orphan',
+            baseUrl: base,
+            kind: QuickKind.document,
+            href: '/catalogue',
+          ),
+        );
+        // No backend for `base`, and an HTTP client that fails the test if
+        // anything is fetched -- runQuick must report before fetching.
+        final client = MockClient((request) async {
+          fail('runQuick should not fetch when the backend is missing');
+        });
+        final httpService = HttpService(client: client, log: (_) {});
+
+        await pumpHomeWith(tester, quick: quick, http: httpService);
+        final before = observer.pushCount;
+
+        await tester.tap(find.text('Orphan'));
+        await tester.pumpAndSettle();
+
+        expect(observer.pushCount, before);
+        expect(find.byType(DocumentScreen), findsNothing);
+        expect(find.textContaining('no longer configured'), findsOneWidget);
+      },
+    );
+
+    testWidgets('the delete button removes a shortcut and reports it', (
+      tester,
+    ) async {
+      await settings.saveBackends([
+        const Backend(name: 'bench', baseUrl: base, secret: 'k'),
+      ]);
+      final quick = QuickService(settings: settings);
+      await quick.add(
+        const QuickItem(
+          label: 'Catalogue',
+          baseUrl: base,
+          kind: QuickKind.document,
+          href: '/catalogue',
+        ),
+      );
+      await pumpHomeWith(tester, quick: quick);
+
+      await tester.tap(find.byIcon(Icons.delete_outline));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Removed shortcut'), findsOneWidget);
+      // The row is gone from the listing.
+      expect(find.text('Catalogue'), findsNothing);
+      expect(await quick.count(), 0);
+    });
+
+    testWidgets('removing the last shortcut hides the Shortcuts section', (
+      tester,
+    ) async {
+      await settings.saveBackends([
+        const Backend(name: 'bench', baseUrl: base, secret: 'k'),
+      ]);
+      final quick = QuickService(settings: settings);
+      await quick.add(
+        const QuickItem(
+          label: 'Catalogue',
+          baseUrl: base,
+          kind: QuickKind.document,
+          href: '/catalogue',
+        ),
+      );
+      await pumpHomeWith(tester, quick: quick);
+
+      await tester.tap(find.byIcon(Icons.delete_outline));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Shortcuts'), findsNothing);
+    });
   });
 }

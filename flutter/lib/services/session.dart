@@ -32,6 +32,17 @@
 ///    `live_service.dart` deliberately hold no reference to either
 ///    `nav_service.dart` or each other (see their own module comments), so
 ///    the wiring moves to this file, the coordinator.
+///  - **[saveQuick]/[runQuick]**, for the same reason: `quick_service.dart`
+///    only stores and resolves a shortcut (its own module comment is explicit
+///    that composing that with a fetch or an action is deliberately left to
+///    this file), and [NavService]/[ActionService] each know nothing of the
+///    other or of [QuickService]. Saving needs [NavService]'s notion of "the
+///    current backend and document" to turn a pressed row into a
+///    [QuickItem]; running needs [QuickService.backendFor] plus
+///    [NavService.adopt]/[NavService.fetch] plus, for an action shortcut,
+///    the same [_askAction] a hand-pressed [render.ActionTarget] goes
+///    through — so a shortcut gets exactly the confirmation a hand-reached
+///    action would, never a silent invoke.
 ///
 /// **State management.** [SessionService] is the top-level [ChangeNotifier]
 /// the UI listens to (AGENTS.md section 5) — but it forwards, rather than
@@ -54,12 +65,12 @@
 /// **What does not carry over**, beyond the AppMessage/PebbleKit layer this
 /// whole port has no equivalent of (`flutter/AGENTS.md` section 4):
 ///
-///  - `saveQuick`/`removeQuick`/`runQuick` and the backend picker
-///    (`quick.js`, `session.js`'s `listBackends`/`openBackend` passthrough).
-///    Saved shortcuts are their own future task (`quick_service.dart`, tasks
-///    w11/x11) and do not exist on this port yet; until they do, the opening
-///    screen talks to [SettingsService] directly (see `home_screen.dart`'s
-///    module comment) and there is nothing for this file to compose.
+///  - `removeQuick` and the backend picker itself (`quick.js`, `session.js`'s
+///    `listBackends`/`openBackend` passthrough). Removing a shortcut is pure
+///    storage — `QuickService.remove` — with nothing to compose, so
+///    `home_screen.dart` calls it directly rather than through this file;
+///    [saveQuick] and [runQuick] *do* carry over (see the module comment
+///    above), since both need more than one service.
 ///  - `noteInbox`, `setSeq`, `dismissed` — purely about the watch's overlay/
 ///    sequence protocol over AppMessage, which has no analogue on a single
 ///    device with no separate window stack. The one behavioural gap
@@ -78,6 +89,7 @@ import 'action_service.dart';
 import 'http_service.dart';
 import 'live_service.dart';
 import 'nav_service.dart';
+import 'quick_service.dart';
 import 'render_service.dart' as render;
 import 'settings_service.dart';
 
@@ -189,25 +201,83 @@ class ActionFailed extends SessionNotice {
   const ActionFailed(super.heading, this.failure);
 }
 
+/// What [SessionService.saveQuick] did with a pressed row. Not a
+/// [SessionNotice]: the row being saved is already on screen (this is
+/// `document_screen.dart`'s long-press/overflow affordance), so the caller
+/// reports the outcome directly (a `SnackBar`, say) rather than laying
+/// something over [SessionService.document] that the very next navigation
+/// would clear before anyone read it. Mirrors the three outcomes
+/// `saveQuick()` sends as a frame message in session.js
+/// (`'Saved'`/`'Not saved'`/`'Cannot save'`/`'Cannot save that'`), collapsed
+/// to one enum since this port has a typed return value to switch on instead
+/// of a string to read.
+enum QuickSaveOutcome {
+  /// Stored — new, or replacing an identical existing shortcut (see
+  /// [QuickService.add]'s idempotence).
+  saved,
+
+  /// [QuickService.maxQuick] shortcuts are already stored. Mirrors
+  /// `'Not saved'`; must be surfaced, never silently dropped.
+  full,
+
+  /// [row] cannot be a shortcut at all: a property or an already-embedded
+  /// sub-entity has nothing to look up or re-fetch later
+  /// ([render.DetailTarget]/[render.EmbeddedTarget]), or the row was an
+  /// action on a document that has no address of its own to remember as the
+  /// holder (an embedded document — [NavService.href] is null). Mirrors
+  /// `'Cannot save'`/`'Cannot save that'`.
+  notSaveable,
+}
+
+/// What [SessionService.runQuick] did with a saved shortcut. Also not a
+/// [SessionNotice], and for the same reason [QuickSaveOutcome] is not one:
+/// this is called from wherever shortcuts are listed (`home_screen.dart`),
+/// before any [SessionService.document] exists to lay a notice over.
+/// Mirrors the two outcomes `runQuick()` in session.js can produce before it
+/// ever gets as far as fetching anything.
+enum QuickRunOutcome {
+  /// The backend was resolved and adopted, and the fetch that follows —
+  /// [render.FetchTarget]'s href for a document shortcut, [QuickItem.holder]
+  /// for an action one — is already under way or has already landed (or
+  /// failed; see [NavService.adopt]'s doc comment on why a shortcut still
+  /// navigates on a failed fetch rather than reporting nothing at all). The
+  /// caller should now show [SessionService] on screen (push
+  /// `DocumentScreen`) — whatever it has to show, including a failure or a
+  /// [ActionWithdrawn] notice, belongs there, not on the screen the
+  /// shortcut was pressed from.
+  opened,
+
+  /// [QuickItem.baseUrl] no longer matches a configured backend. Nothing was
+  /// adopted or fetched; report this on the screen the shortcut was pressed
+  /// from — mirrors session.js's `runQuick` showing an overlay on the
+  /// *picker* frame rather than adopting one, since there is nothing to show
+  /// past this point.
+  backendMissing,
+}
+
 /// Composes [NavService], [ActionService] and [LiveService] into the single
 /// service the UI layer talks to — see the module comment for what belongs
 /// here and why.
 ///
 /// [HttpService] is injected the same way every other service in this app
-/// is; [nav]/[actions]/[live] are injected too, and default to plain
-/// instances built on [http], so a test can substitute a [NavService] with a
-/// fake timer (mirrors `nav_service_test.dart`'s `FakeTimers`) or a
-/// [LiveService] with a fake clock (mirrors `live_service_test.dart`'s
-/// `FakeClock`) without reaching inside this class.
+/// is; [nav]/[actions]/[live]/[quick] are injected too, and default to plain
+/// instances (built on [http] for the first three), so a test can substitute
+/// a [NavService] with a fake timer (mirrors `nav_service_test.dart`'s
+/// `FakeTimers`) or a [LiveService] with a fake clock (mirrors
+/// `live_service_test.dart`'s `FakeClock`) without reaching inside this
+/// class. [QuickService] needs no [http] — it never does its own I/O (see
+/// its module comment) — so it is optional on its own, not derived from it.
 class SessionService extends ChangeNotifier {
   SessionService({
     required HttpService http,
     NavService? nav,
     ActionService? actions,
     LiveService? live,
+    QuickService? quick,
   }) : _nav = nav ?? NavService(http: http),
        _actions = actions ?? ActionService(http: http),
        _live = live ?? LiveService(http: http),
+       _quick = quick ?? QuickService(),
        _ownsNav = nav == null {
     // The one piece of cross-module wiring neither nav_service.dart nor
     // action_service.dart can do to itself — see the module comment.
@@ -222,6 +292,7 @@ class SessionService extends ChangeNotifier {
   final NavService _nav;
   final ActionService _actions;
   final LiveService _live;
+  final QuickService _quick;
 
   /// Whether this service constructed [_nav] itself (and so owns disposing
   /// it) or was handed one built elsewhere (a test's, most often) — a
@@ -253,6 +324,13 @@ class SessionService extends ChangeNotifier {
 
   /// The document to render. See [NavService.document].
   render.RenderedDocument? get document => _nav.document;
+
+  /// The href [document] can be re-fetched from, or null for a sub-entity
+  /// that arrived embedded rather than linked. See [NavService.href]. Added
+  /// for [saveQuick]: an action row is saved as (this href, the action's
+  /// name), never as the action's own href — see `quick_service.dart`'s
+  /// module comment.
+  String? get href => _nav.href;
 
   /// True once there is a document below the one on screen. See
   /// [NavService.canGoBack].
@@ -364,6 +442,93 @@ class SessionService extends ChangeNotifier {
     _question = null;
     _notice = null;
     _pendingActionLabel = '';
+  }
+
+  // --- saved shortcuts -------------------------------------------------
+
+  /// Saves [row] as a shortcut, or explains why it cannot be one — see
+  /// [QuickSaveOutcome]. Mirrors `saveQuick()` in session.js: what is stored
+  /// is what the server offered, not a URL of this app's own — an action by
+  /// name plus [href] (the *document's* address, never the action's own —
+  /// `quick_service.dart`'s module comment), a link by the href it carried.
+  /// A property ([render.DetailTarget]) opens a reading view, not a place to
+  /// return to, and an already-embedded sub-entity ([render.EmbeddedTarget])
+  /// has no address of its own either — both are refused rather than saved
+  /// as something that would not resolve to anything next time.
+  Future<QuickSaveOutcome> saveQuick(render.Row row) async {
+    final backend = _nav.backend;
+    if (backend == null) {
+      return QuickSaveOutcome.notSaveable;
+    }
+
+    QuickItem item;
+    switch (row.target) {
+      case render.ActionTarget(:final name):
+        final holder = _nav.href;
+        if (holder == null || holder.isEmpty) {
+          // The document offering this action arrived embedded, not linked
+          // — nowhere to look the action up again next time.
+          return QuickSaveOutcome.notSaveable;
+        }
+        item = QuickItem(
+          label: row.label,
+          backendName: backend.name,
+          baseUrl: backend.baseUrl,
+          kind: QuickKind.action,
+          holder: holder,
+          name: name,
+        );
+      case render.FetchTarget(:final href):
+        item = QuickItem(
+          label: row.label,
+          backendName: backend.name,
+          baseUrl: backend.baseUrl,
+          kind: QuickKind.document,
+          href: href,
+        );
+      case render.DetailTarget():
+      case render.EmbeddedTarget():
+        return QuickSaveOutcome.notSaveable;
+    }
+
+    final saved = await _quick.add(item);
+    return saved != null ? QuickSaveOutcome.saved : QuickSaveOutcome.full;
+  }
+
+  /// Follows a saved shortcut — see [QuickRunOutcome]. Mirrors `runQuick()`
+  /// in session.js: adopt the backend the shortcut points at (never fetch
+  /// its root first — [NavService.adopt]'s doc comment), then either fetch
+  /// the saved address (a document shortcut) or fetch the holder document
+  /// and look the action up by name in whatever comes back (an action
+  /// shortcut) — the exact same [_askAction] a hand-pressed
+  /// [render.ActionTarget] goes through, so a withdrawn action is reported
+  /// as [ActionWithdrawn] and a confirmable one still asks, precisely as if
+  /// this had been walked to by hand rather than jumped to.
+  Future<QuickRunOutcome> runQuick(QuickItem item) async {
+    final backend = await _quick.backendFor(item);
+    if (backend == null) {
+      return QuickRunOutcome.backendMissing;
+    }
+
+    _live.stop();
+    _clearTransient();
+    _nav.adopt(backend);
+
+    if (item.kind == QuickKind.document) {
+      await _nav.fetch(item.href, title: item.label);
+      return QuickRunOutcome.opened;
+    }
+
+    await _nav.fetch(item.holder, title: item.label);
+    if (_nav.state == DocumentState.ok) {
+      // Only ask if the holder itself was actually fetched — a failed fetch
+      // already left state/failure set for the caller to render; asking
+      // about an action on a document that never arrived would be
+      // inventing a document nobody sent (mirrors `openQuickHolder`'s
+      // error branch in nav.js, which never calls its `then` callback).
+      await _askAction(item.name);
+    }
+    return QuickRunOutcome.opened;
   }
 
   // --- actions ---------------------------------------------------------

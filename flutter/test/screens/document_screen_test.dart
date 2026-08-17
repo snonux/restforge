@@ -38,8 +38,10 @@ import 'package:restforge/screens/document_screen.dart';
 import 'package:restforge/services/http_service.dart';
 import 'package:restforge/services/live_service.dart';
 import 'package:restforge/services/nav_service.dart';
+import 'package:restforge/services/quick_service.dart';
 import 'package:restforge/services/session.dart';
 import 'package:restforge/services/settings_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 const String _base = 'http://bench.example/';
 
@@ -190,7 +192,9 @@ class _RecordingObserver extends NavigatorObserver {
 
 void main() {
   Future<void> pumpDocument(WidgetTester tester, SessionService session) async {
-    await tester.pumpWidget(MaterialApp(home: DocumentScreen(session: session)));
+    await tester.pumpWidget(
+      MaterialApp(home: DocumentScreen(session: session)),
+    );
     await tester.pump();
   }
 
@@ -390,9 +394,7 @@ void main() {
     },
   );
 
-  testWidgets('pull-to-refresh re-reads the current document', (
-    tester,
-  ) async {
+  testWidgets('pull-to-refresh re-reads the current document', (tester) async {
     final env = _Env();
     await env.session.openBackend(_backend);
     await pumpDocument(tester, env.session);
@@ -586,9 +588,7 @@ void main() {
 
         // A one-second budget (plus live_service.dart's 60s buffer) so a
         // poll past 61s gives up -- mirrors session_test.dart's give-up test.
-        env.routeFor['GET ${_base}fire'] = _jobBody({
-          'staleAfterSeconds': 1,
-        });
+        env.routeFor['GET ${_base}fire'] = _jobBody({'staleAfterSeconds': 1});
         env.routeFor['GET ${_base}job'] = _jobBody({'staleAfterSeconds': 1});
         await tester.tap(find.text('Fire the kiln'));
         await tester.pump();
@@ -626,6 +626,116 @@ void main() {
         expect(find.byKey(const Key('live-done-banner')), findsNothing);
         expect(find.byKey(const Key('live-giveup-banner')), findsNothing);
         expect(find.byKey(const Key('notice-dismiss')), findsNothing);
+        env.session.dispose();
+      },
+    );
+  });
+
+  group('saving a shortcut (x11)', () {
+    // The long-press affordance document_screen.dart's module comment adds:
+    // a link or action row is saved as a shortcut and the outcome is
+    // reported with a SnackBar — task x11's "save a row" half, at the
+    // widget layer. The composition underneath (what gets stored, the
+    // holder/name split for an action) is already pinned in
+    // session_test.dart's saveQuick group; this only proves the gesture
+    // reaches SessionService.saveQuick and the right wording comes back,
+    // and that the property/entity rows that saveQuick would refuse are
+    // not even offered the gesture.
+    //
+    // SharedPreferences is mocked per test so the default QuickService
+    // SessionService builds has clean, isolated storage to write into —
+    // the existing tests in this file never touch preferences, so this is
+    // the first group that needs it.
+
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+    });
+
+    testWidgets(
+      'long-pressing a link row saves it as a shortcut and reports it',
+      (tester) async {
+        final env = _Env();
+        await env.session.openBackend(_backend);
+        await pumpDocument(tester, env.session);
+
+        await tester.longPress(find.text('Catalogue'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Saved "Catalogue" as a shortcut'), findsOneWidget);
+        // And it really was stored: a fresh QuickService reads it back as a
+        // document shortcut pointing at the link's href, resolved against
+        // the backend the session had open.
+        final quick = QuickService();
+        final saved = await quick.get(0);
+        expect(saved?.kind, QuickKind.document);
+        expect(saved?.label, 'Catalogue');
+        expect(saved?.baseUrl, _base);
+        expect(saved?.href, '/catalogue');
+        env.session.dispose();
+      },
+    );
+
+    testWidgets(
+      'long-pressing an action row saves it by name, with the document '
+      'address as the holder',
+      (tester) async {
+        final env = _Env();
+        await env.session.openBackend(_backend);
+        await pumpDocument(tester, env.session);
+
+        await tester.longPress(find.text('Sweep the floor'));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('Saved "Sweep the floor" as a shortcut'),
+          findsOneWidget,
+        );
+        final quick = QuickService();
+        final saved = await quick.get(0);
+        expect(saved?.kind, QuickKind.action);
+        expect(saved?.label, 'Sweep the floor');
+        expect(saved?.name, 'sweep');
+        // The holder is the document's own address (the root), never the
+        // action's href — see quick_service.dart's module comment.
+        expect(saved?.holder, _base);
+        expect(saved?.href, '');
+        env.session.dispose();
+      },
+    );
+
+    testWidgets('saving the same row twice does not duplicate it', (
+      tester,
+    ) async {
+      final env = _Env();
+      await env.session.openBackend(_backend);
+      await pumpDocument(tester, env.session);
+
+      await tester.longPress(find.text('Catalogue'));
+      await tester.pumpAndSettle();
+      await tester.longPress(find.text('Catalogue'));
+      await tester.pumpAndSettle();
+
+      final quick = QuickService();
+      expect(await quick.count(), 1);
+      env.session.dispose();
+    });
+
+    testWidgets(
+      'a property row is not offered the save gesture -- no SnackBar',
+      (tester) async {
+        final env = _Env();
+        await env.session.openBackend(_backend);
+        await pumpDocument(tester, env.session);
+
+        await tester.longPress(find.text('status'));
+        await tester.pumpAndSettle();
+
+        // No SnackBar: _PropertyRow has no onLongPress, so the press goes
+        // nowhere -- mirroring saveQuick refusing a DetailTarget, one layer
+        // up, by not offering the gesture in the first place.
+        expect(find.byType(SnackBar), findsNothing);
+        final quick = QuickService();
+        expect(await quick.count(), 0);
         env.session.dispose();
       },
     );
