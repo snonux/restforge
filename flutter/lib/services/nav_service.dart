@@ -233,6 +233,20 @@ class NavService extends ChangeNotifier with WidgetsBindingObserver {
       ? null
       : render.document(_stack.last.entity, _stack.last.title);
 
+  /// The raw document on top of the stack, before [document] turns it into
+  /// rows — what `action_service.dart` needs to look an action up by name
+  /// ([Entity.actionByName]) and what `live_service.dart` needs to match a
+  /// poll target against ([LiveService.pollTarget]). Null under the same
+  /// conditions [document] is. Added for `session.dart` (task p11), the one
+  /// module allowed to compose this service with those two — see the module
+  /// comment on what this file does not own.
+  Entity? get entity => _stack.isEmpty ? null : _stack.last.entity;
+
+  /// The href [entity] can be re-fetched from, or null for a sub-entity that
+  /// arrived embedded rather than linked — same nullability as
+  /// [_StackFrame.href], and added for the same reason as [entity].
+  String? get href => _stack.isEmpty ? null : _stack.last.href;
+
   /// True once there is a document below the one on screen to pop back to
   /// with [back]. False for the backend's root document — what "back" means
   /// from there (closing this backend, say) is a decision for whatever
