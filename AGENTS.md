@@ -6,7 +6,7 @@ few things that are true of both.
 
 - What the project is and how the two relate: [README.md](README.md)
 - The design and its invariants, written down once for both:
-  [pebble/docs/DESIGN.md](pebble/docs/DESIGN.md)
+  [docs/DESIGN.md](docs/DESIGN.md)
 
 | Working on | Read |
 |---|---|
@@ -39,7 +39,7 @@ just check               # secret scan (whole tree) + both apps' code checks
 
 These are contract, not implementation, and they survive the change of
 language. The full statement of each, with the reasoning, is in
-[pebble/docs/DESIGN.md](pebble/docs/DESIGN.md); the short form:
+[docs/DESIGN.md](docs/DESIGN.md); the short form:
 
 - **Never build a URL.** Follow the href the server put in the document,
   resolved against the configured base. No rel, class, action name or property

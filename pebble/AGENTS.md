@@ -136,8 +136,10 @@ docs/           DESIGN.md and the f3sctl API handoff notes
 The companion is **not** a stub, and the watch is **not** self-contained. Every
 HTTP request, every Siren document, the navigation stack and all the secrets
 live in `src/pkjs/`; the watch renders frames and reports button presses. See
-[docs/DESIGN.md](docs/DESIGN.md) for why, and for the invariants a change must
-not break — chief among them that the watch never learns an href.
+[docs/DESIGN.md](docs/DESIGN.md) for the watch/phone split — whose chief
+property is that the watch never learns an href — and
+[`../docs/DESIGN.md`](../docs/DESIGN.md) for the invariants a change must
+not break.
 
 A per-file map is at the end of DESIGN.md. Every module also carries its own
 rationale at the top of the file; read that before changing it, because most of

@@ -13,7 +13,7 @@ This is a port of the [Pebble watchapp](../pebble/), not a companion to it. The
 watchapp is split across two devices because the watch has no IP stack; here
 there is one device and no split. What carries over is everything that was
 never about the hardware — see [AGENTS.md](AGENTS.md) and
-[../pebble/docs/DESIGN.md](../pebble/docs/DESIGN.md).
+[../docs/DESIGN.md](../docs/DESIGN.md).
 
 The screenshots below are the app browsing the fixture Siren API in
 [`pebble/tools/`](../pebble/tools/fake-siren-server.py) — an API deliberately

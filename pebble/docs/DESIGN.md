@@ -1,16 +1,13 @@
-# RESTForge design
+# RESTForge watchapp design
 
-This is the map. Every module carries its own rationale at the top of the file;
-what follows is how they fit together and which invariants must survive a
-change.
-
-It is written from the watchapp, and the file map at the end is the watchapp's.
-But **"The rule everything else follows from" and "Invariants worth protecting"
-govern both apps** — they are statements about what a hypermedia client owes the
-person using it, and they do not become negotiable in Dart. The Android port in
-[`../../flutter`](../../flutter) is held to them too, and its
-[AGENTS.md](../../flutter/AGENTS.md) says which parts of the structure below
-carry over and which exist only to serve the watch/phone split.
+This is the watchapp's structural map: how the watch/phone split draws the
+work, the layout on two screens, what bit, and a per-file guide. The
+contract *both* apps keep — "The rule everything else follows from" and
+"Invariants worth protecting" — lives once at
+[`../../docs/DESIGN.md`](../../docs/DESIGN.md), so it is not stated twice and
+does not drift; read that before changing anything here, because those are
+behavioural requirements rather than implementation notes. This file is the
+watchapp-specific half.
 
 ## The split
 
@@ -41,64 +38,11 @@ offered, because it cannot name one.
                                         module that touches a secret)
 ```
 
-## The rule everything else follows from
+## The rule and the invariants
 
-> Fetch the root. Render what it offers. Never build a URL.
-
-A client that obeys that cannot contain server-specific code — which is what
-makes it reusable. Concretely:
-
-- `siren.js` contains no rel, no class, no action name and no property name,
-  and must not gain one.
-- Navigation is only ever "follow the href the server put in the document".
-  `url.js` resolves it against the configured base — that is RFC 3986
-  resolution, not path construction: the path came from the server, only the
-  origin is ours.
-- `just check`'s genericity grep enforces this. It must print nothing.
-
-The single exception is `startRel`, which the user types into the settings page
-themselves. Even then the app locates the link *by rel* and uses the href it
-finds.
-
-## Invariants worth protecting
-
-Each of these has a test, and each exists because the obvious implementation
-gets it wrong.
-
-**A failed request is not an answer.** "I could not ask" and "the answer was
-no" are different things, and only one of them is about the server. A failure
-never replaces the document on screen with an empty one — the last good
-document stays exactly where it was and the reason goes on top of it. Reporting
-a healthy service as down because the phone lost signal is the failure this
-design makes unrepresentable.
-
-**Rendering does not interpret.** A value is shown as the server sent it, so
-three states never collapse into two. A client that renders `ping: false` as
-"off" is asserting something the server did not say. Nothing is hidden either,
-including vocabulary the app has never seen: "I do not recognise this" is not a
-reason to withhold it from the person wearing the watch.
-
-**Ask before acting.** Any method outside `GET`, `HEAD`, `OPTIONS` and `TRACE`
-gets a confirmation screen. That division is RFC 9110's, not a list of
-dangerous-sounding action names. On a device with four buttons, the row that
-opens a property and the row that changes the world must not act the same.
-
-**Never carry a document across an action.** Every action is followed by an
-unconditional re-fetch. A `409` is re-fetched and re-rendered, never retried:
-it means the state we acted on was stale, and repeating a request the server
-just judged wrong cannot fix that. The one bounded exception is a required
-checkbox the user actually ticked, re-sent once, within a minute.
-
-**Do not invent a value.** A required field with no default and no confirmation
-to stand in for it is asked for out loud, or refused. A value nobody supplied,
-for a field a server marked required, is how a client does something nobody
-asked for.
-
-**Do not claim a job finished.** While something is still running, a poll can
-be routed to a machine that never saw it. A reply about a different `id`, or
-one saying there is no job, is *no news* — not completion. A failed poll is
-news about the network. And giving up is reported as giving up. See `live.js`,
-which spends most of its comments on exactly this.
+The rule everything else follows from, and the invariants worth protecting,
+are the contract both apps keep and are stated once, at
+[`../../docs/DESIGN.md`](../../docs/DESIGN.md). They are not repeated here.
 
 ## Things that bit, and would again
 

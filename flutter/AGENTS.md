@@ -9,7 +9,7 @@ check it, and what a change here must not break.
 - What both apps are and how they relate: [../README.md](../README.md)
 - The rules both are held to: [../AGENTS.md](../AGENTS.md)
 - The design and its reasoning, written down once for both:
-  [../pebble/docs/DESIGN.md](../pebble/docs/DESIGN.md)
+  [../docs/DESIGN.md](../docs/DESIGN.md)
 
 ## 1. One-Time Initial Setup
 
@@ -178,7 +178,7 @@ this shape:
   so a caller `switch`es on the outcome instead of wrapping the call in
   try/catch.
 
-Reasoning: `pebble/docs/DESIGN.md` makes "a failed request is not an answer"
+Reasoning: `../docs/DESIGN.md` makes "a failed request is not an answer"
 an invariant for both apps — the last good document must stay on screen with
 the reason on top of it, never replaced by an empty one. An exception is the
 wrong vehicle for that: it unwinds past the point where the old document was

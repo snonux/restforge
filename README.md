@@ -25,7 +25,7 @@ follows from it.
 
 Start at each directory's own `README.md` for what it does, and its `AGENTS.md`
 for how to build, run and check it. The design that both are held to is written
-down once, in [`pebble/docs/DESIGN.md`](pebble/docs/DESIGN.md) — read the
+down once, in [`docs/DESIGN.md`](docs/DESIGN.md) — read the
 "Invariants worth protecting" section before changing either app, because those
 are behavioural requirements rather than implementation notes, and they apply to
 both.

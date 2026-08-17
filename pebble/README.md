@@ -130,6 +130,6 @@ just check          # two greps that cannot fail loudly on their own
 ## How it is put together
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the split between watch and phone, and
-for the rules the app keeps. The short version: the watch renders and reports
+[`../docs/DESIGN.md`](../docs/DESIGN.md) for the rules both apps keep. The short version: the watch renders and reports
 button presses; PebbleKit JS on the phone does every request, parses every
 document, and holds the navigation stack and the secrets.
