@@ -85,20 +85,21 @@
 ///    banner that never claims the job failed or finished, only that this
 ///    app stopped asking.
 ///
-/// **What this file deliberately does not build**, already a separate task
-/// depending on this one: opening a property ([render.DetailTarget]) sets
-/// [SessionService.detail], but the full, scrollable reading view for it is
-/// task t11's job (`pebble/src/c/win_detail.c`'s equivalent). This screen
-/// calls [SessionService.activate] for every row exactly the same way
-/// regardless of what follows, so that task does not have to change how a
-/// row is pressed — only what appears once [SessionService] reacts to it.
+/// **The full-screen reading view** for a property's value
+/// ([render.DetailTarget] → [SessionService.detail]) is built by
+/// [DetailViewHost] wrapping [build] — see `detail_screen.dart`'s module
+/// comment (the port of `pebble/src/c/win_detail.c`). This screen calls
+/// [SessionService.activate] for every row exactly the same way regardless
+/// of what follows, so the reading view did not have to change how a row is
+/// pressed — only what appears once [SessionService] reacts to it.
 ///
 /// **Confirming or supplying a value for an action**
-/// ([SessionService.question]) is task u11's, and is the one exception to
-/// "this file only decides how a row looks": [build] wraps the whole screen
-/// in [ConfirmationSheetHost], which owns showing/hiding the modal sheet —
-/// see that file's module comment for why that wiring is one line here and
-/// everything else lives there.
+/// ([SessionService.question]) is task u11's, and with the reading view
+/// above is one of the two exceptions to "this file only decides how a row
+/// looks": [build] wraps the whole screen in [ConfirmationSheetHost],
+/// which owns showing/hiding the modal sheet — see that file's module
+/// comment for why that wiring is one line here and everything else lives
+/// there.
 ///
 /// **Saving a shortcut** (task x11): a long-press on [_LinkRow] or
 /// [_ActionRow] — never [_PropertyRow] or [_EntityRow], which
@@ -121,6 +122,7 @@ import '../services/quick_service.dart' show QuickService;
 import '../services/render_service.dart' as render;
 import '../services/session.dart';
 import 'confirmation_sheet.dart';
+import 'detail_screen.dart';
 
 class DocumentScreen extends StatelessWidget {
   const DocumentScreen({super.key, required this.session});
@@ -136,41 +138,45 @@ class DocumentScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ConfirmationSheetHost is the only piece of this file that knows about
-    // SessionService.question — wrapping the rest of the screen in it is
-    // task u11's entire wiring change here (see confirmation_sheet.dart's
-    // module comment).
-    return ConfirmationSheetHost(
+    // DetailViewHost (task t11) is the only piece of this file that knows
+    // about SessionService.detail — wrapping the rest of the screen in it
+    // is this task's entire wiring change here (see detail_screen.dart's
+    // module comment), the same shape as ConfirmationSheetHost below it
+    // for SessionService.question.
+    return DetailViewHost(
       session: session,
-      child: ListenableBuilder(
-        listenable: session,
-        builder: (context, _) {
-          return PopScope(
-            // Whenever there is somewhere in SessionService's own stack to
-            // pop to, this route itself must not close — see the module
-            // comment.
-            canPop: !session.canGoBack,
-            onPopInvokedWithResult: (didPop, result) {
-              if (didPop) {
-                // canPop was already true: the platform popped this route
-                // (to the backend picker, say), and there is nothing left
-                // here to unwind first.
-                return;
-              }
-              session.back();
-            },
-            child: Scaffold(
-              appBar: AppBar(
-                title: Text(
-                  session.document?.title ??
-                      session.backend?.name ??
-                      'RESTForge',
+      child: ConfirmationSheetHost(
+        session: session,
+        child: ListenableBuilder(
+          listenable: session,
+          builder: (context, _) {
+            return PopScope(
+              // Whenever there is somewhere in SessionService's own stack to
+              // pop to, this route itself must not close — see the module
+              // comment.
+              canPop: !session.canGoBack,
+              onPopInvokedWithResult: (didPop, result) {
+                if (didPop) {
+                  // canPop was already true: the platform popped this route
+                  // (to the backend picker, say), and there is nothing left
+                  // here to unwind first.
+                  return;
+                }
+                session.back();
+              },
+              child: Scaffold(
+                appBar: AppBar(
+                  title: Text(
+                    session.document?.title ??
+                        session.backend?.name ??
+                        'RESTForge',
+                  ),
                 ),
+                body: _DocumentBody(session: session),
               ),
-              body: _DocumentBody(session: session),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
@@ -513,7 +519,10 @@ class _Banner extends StatelessWidget {
               SizedBox(
                 width: 18,
                 height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2, color: foreground),
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: foreground,
+                ),
               )
             else
               Icon(icon, color: foreground, size: 20),
