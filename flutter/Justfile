@@ -1,0 +1,112 @@
+# =============================================
+# RESTForge for Android — Flutter/Dart app
+#
+# The phone-native sibling of ../pebble. See AGENTS.md for the workflow and
+# ../README.md for how the two apps relate.
+# =============================================
+
+# Flutter is not on PATH on a fresh shell here. Either export it once —
+#   export PATH="$HOME/flutter/bin:$PATH"
+# — or point this at the binary:
+#   just FLUTTER=$HOME/flutter/bin/flutter test
+FLUTTER := env_var_or_default("FLUTTER", "flutter")
+
+default:
+    @just --list
+
+alias t := test
+alias a := analyze
+alias r := run-linux
+
+# ─────────────────────────────────────────────
+# Development
+# ─────────────────────────────────────────────
+
+# Resolve dependencies (run after any pubspec.yaml change)
+pub-get:
+    {{FLUTTER}} pub get
+
+# Run on Linux desktop — the fast loop, with hot reload and no device needed
+run-linux:
+    {{FLUTTER}} run -d linux
+
+# Run on the connected Android device
+run-android:
+    {{FLUTTER}} run -d android
+
+# What Flutter can see right now
+devices:
+    {{FLUTTER}} devices
+
+# ─────────────────────────────────────────────
+# Tests and checks
+# ─────────────────────────────────────────────
+
+# The unit and widget tests. No device, no emulator.
+test:
+    {{FLUTTER}} test
+
+# Static analysis against analysis_options.yaml
+analyze:
+    {{FLUTTER}} analyze
+
+# Reformat every Dart source file in place
+format:
+    {{FLUTTER}} format lib test
+
+# Everything that has to pass before a commit.
+#
+# Genericity is the one check shared with the watchapp, and it matters here for
+# the same reason: RESTForge knows Siren and HTTP and nothing about any
+# particular server, and a single hardcoded rel or path would quietly end that.
+# The grep matches inside comments too, so prose naming a server trips it —
+# reword the comment rather than loosening the grep, because a check with
+# known-good noise in it stops being a check.
+#
+# The watchapp's third check, the ES5 grep, has no analogue here: Dart is
+# compiled ahead of time and a syntax error is a build failure, not a surprise
+# on the device.
+check: check-secrets check-code
+
+# Analysis and the genericity grep, without the repo-wide secret scan. Split
+# out so the root Justfile can scan the working tree once and then run both
+# apps' code checks, rather than scanning three times over.
+check-code: analyze
+    @echo "== genericity =="
+    -grep -rniE 'f3s|power-off|fans|/status|/job|monitoring' lib/
+
+# Repo-wide secret scan; the recipe itself lives in ../Justfile because the two
+# apps share one working tree and one set of keys.
+check-secrets:
+    @just -f ../Justfile check-secrets
+
+# ─────────────────────────────────────────────
+# Release builds
+# ─────────────────────────────────────────────
+
+# Per-ABI split APKs (smaller; what you want for distribution)
+build-apk:
+    {{FLUTTER}} build apk --release --split-per-abi
+
+# ARM64 only — the modern-phone case
+build-apk-arm64:
+    {{FLUTTER}} build apk --release --target-platform android-arm64
+
+# Install the arm64 release APK on the connected device
+install-apk:
+    adb install -r build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+
+# Release bundle for Linux desktop
+build-linux:
+    {{FLUTTER}} build linux --release
+
+# ─────────────────────────────────────────────
+# Maintenance
+# ─────────────────────────────────────────────
+
+clean:
+    {{FLUTTER}} clean
+
+# Toolchain sanity check — run this first when a build fails for no reason
+doctor:
+    {{FLUTTER}} doctor -v

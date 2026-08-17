@@ -4,6 +4,14 @@ This is the map. Every module carries its own rationale at the top of the file;
 what follows is how they fit together and which invariants must survive a
 change.
 
+It is written from the watchapp, and the file map at the end is the watchapp's.
+But **"The rule everything else follows from" and "Invariants worth protecting"
+govern both apps** — they are statements about what a hypermedia client owes the
+person using it, and they do not become negotiable in Dart. The Android port in
+[`../../flutter`](../../flutter) is held to them too, and its
+[AGENTS.md](../../flutter/AGENTS.md) says which parts of the structure below
+carry over and which exist only to serve the watch/phone split.
+
 ## The split
 
 The watch renders documents and reports button presses. Everything else — every

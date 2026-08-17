@@ -1,0 +1,32 @@
+# Dart / Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+/coverage/
+pubspec.lock.bak
+
+# Symbolication and obfuscation output
+app.*.symbols
+app.*.map.json
+
+# Android
+android/.gradle/
+android/local.properties
+android/captures/
+android/.cxx/
+android/key.properties
+android/gradlew
+android/gradlew.bat
+android/gradle/wrapper/gradle-wrapper.jar
+**/GeneratedPluginRegistrant.java
+*.jks
+*.keystore
+
+# Linux desktop
+linux/flutter/ephemeral/
+
+# Editor, agent and key-material ignores are repo-wide; see ../.gitignore.

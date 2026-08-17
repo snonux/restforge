@@ -1,177 +1,71 @@
 # RESTForge - AGENTS.md
-A generic Siren hypermedia browser for Pebble Time 2 and Pebble Round 2
-Fedora Linux + Rebble Pebble SDK 4.9+ (August 2026)
 
-This file is the workflow reference: how to build, run and check RESTForge.
+This repository holds **two** apps, and almost everything an agent needs is in
+the one it is working on. This file exists to route you there and to state the
+few things that are true of both.
 
-- What it is and how the pieces fit: [docs/DESIGN.md](docs/DESIGN.md)
-- Getting a build onto a real watch over USB:
-  [docs/SIDELOADING.md](docs/SIDELOADING.md)
+- What the project is and how the two relate: [README.md](README.md)
+- The design and its invariants, written down once for both:
+  [pebble/docs/DESIGN.md](pebble/docs/DESIGN.md)
 
-## 1. One-Time Initial Setup
+| Working on | Read |
+|---|---|
+| The Pebble watchapp | [pebble/AGENTS.md](pebble/AGENTS.md) |
+| The Android app | [flutter/AGENTS.md](flutter/AGENTS.md) |
 
-```bash
-sudo dnf update
-sudo dnf install -y python3-pip nodejs SDL-devel dtc uv just
-uv tool install pebble-tool --python 3.13
-export PATH="$HOME/.local/bin:$PATH"
-pebble sdk install latest
+## Layout
+
+```
+pebble/     The Pebble watchapp: C on the watch, ES5 PebbleKit JS on the phone.
+            Its own Justfile, package.json, wscript, docs/ and tests.
+flutter/    The Android app: Dart/Flutter, also runnable on Linux desktop.
+            Its own Justfile, pubspec.yaml and tests.
+Justfile    Forwards to the two above; owns the repo-wide secret scan.
+README.md   What each is, and the contract both keep.
 ```
 
-## 2. After Every Reboot - Restore uv Tool PATH
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-pebble --version
-```
-
-Optional permanent fix:
-
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-## 3. Justfile Workflow
-
-RESTForge targets two watches, and both are checked every time: they differ in
-shape, not just size, and a layout that works on one can be clipped on the
-other.
-
-- `just dev` / `just dev-emery`: build + install to gabbro / emery
-- `just logs` / `just logs-emery`: live logs (second terminal)
-- `just screenshot` / `just screenshot-emery`
-- `just config` / `just config-emery`: open the phone settings page
-- `just fixture`: the fixture Siren API on :8731 (second terminal)
-- `just test`: the JavaScript unit tests — no emulator needed
-- `just check`: the two greps described below
-- `just kill`, `just clean`, `just rebuild`, `just quick`, `just sdk-version`
-
-Daily loop after reboot:
-
-1. Restore PATH (`export PATH="$HOME/.local/bin:$PATH"`).
-2. `cd /path/to/restforge`
-3. `just fixture` in one terminal, `just logs` in another
-4. `just dev`
-
-### The three checks that cannot fail loudly
-
-`just check` must print nothing. Each part guards against a mistake that
-otherwise looks fine right up until it does not:
-
-- **Secrets.** `just check-secrets` scans every file under the repo, tracked or
-  not, for the contents of any `~/.*apikey*` file, and exits non-zero if it
-  finds any. It reports which file leaked and nothing about the key itself. It
-  does not scan history — that is what `git-filter-repo` is for, and the
-  history was verified clean by hand on 2026-08-16.
-
-- **ES5.** The emulator's JavaScript runtime is modern, the watch's is ES5.1,
-  and the build does not transpile. Arrow functions, `const`, `let` and
-  template literals all work perfectly in the emulator and ship broken. The
-  emulator is a false green; this grep is the only check.
-- **Genericity.** No path, action name or vocabulary belonging to any
-  particular server may appear in `src/`. RESTForge knows Siren, HTTP and
-  AppMessage and nothing else, and a single hardcoded rel would quietly end
-  that.
-
-Both greps also match inside comments, so prose mentioning `const` or a
-server's name will trip them. Reword the comment rather than loosening the
-grep — a check with known-good noise in it stops being a check.
-
-### Real hardware
-
-The emulator answers most questions but not all of them, and the ones it cannot
-answer are the ones that bite: whether the phone's WebView accepts the settings
-page, what inbox size the real companion negotiates, and whether an action
-behaves the same over Bluetooth as over a local socket.
-
-Sideloading over USB is a dozen commands once you know them and a long dead end
-if you do not — the companion app is not called "Pebble", the developer
-connection needs two switches in two different places and turns itself off
-again, and `adb shell input text` silently corrupts a long API key. All of it,
-with the commands, is in [docs/SIDELOADING.md](docs/SIDELOADING.md). Read it
-before touching a watch rather than after.
+## Root commands
 
 ```sh
-adb forward tcp:9000 tcp:9000
-pebble install --phone localhost --logs build/restforge.pbw
+just pebble <recipe>     # e.g. just pebble dev
+just flutter <recipe>    # e.g. just flutter run-linux
+just test                # both suites; neither needs an emulator or a device
+just check               # secret scan (whole tree) + both apps' code checks
 ```
 
-### Verifying a change
+`just check` must print nothing.
 
-`just test` is fast, needs no emulator, and covers the JavaScript. It does not
-cover the watch, and screenshots are not decoration: legibility is an
-acceptance criterion here, and regressions in it are invisible in logs. Look at
-both screens after any layout change.
+## What is true of both apps
 
-The fixture API deliberately shares no vocabulary with anything real, and
-reproduces the awkward cases on demand: a 401, a 409, a non-JSON response, a
-request that outruns the read timeout, a job that takes 24 seconds, and a
-required field only a human can fill.
+These are contract, not implementation, and they survive the change of
+language. The full statement of each, with the reasoning, is in
+[pebble/docs/DESIGN.md](pebble/docs/DESIGN.md); the short form:
 
-## 4. Project Layout
+- **Never build a URL.** Follow the href the server put in the document,
+  resolved against the configured base. No rel, class, action name or property
+  name belonging to a particular server may appear in either app's source — the
+  genericity grep in each `just check` enforces it, and it matches inside
+  comments, so reword the comment rather than loosening the grep.
+- **Ask before acting.** Any method outside `GET`, `HEAD`, `OPTIONS`, `TRACE`
+  gets a confirmation. RFC 9110's division, not a list of scary-sounding names.
+- **A failed request is not an answer.** The last good document stays where it
+  is and the reason goes on top of it.
+- **Rendering does not interpret**, and hides nothing — including vocabulary
+  the app has never seen.
+- **Never carry a document across an action.** Re-fetch unconditionally; a
+  `409` is re-fetched and re-rendered, never retried.
+- **Do not invent a value** for a field a server marked required.
+- **Do not claim a job finished.** A reply about a different id, or one saying
+  there is no job, is *no news* — not completion.
+- **A secret goes in a request header, never a query string**, and never into a
+  commit, a command line (where `ps` can read it) or a log. A key belongs in a
+  file outside the repo, mode 0600, pasted into the app's settings.
 
-```
-package.json    Pebble manifest: platforms, message keys, font resources
-wscript         Waf build rules (globs src/c and src/pkjs, so new files
-                need no build change)
-Justfile        dev/build/install/emulator/test shortcuts
-src/c/          the on-watch app: rendering and buttons
-src/pkjs/       PebbleKit JS companion: HTTP, Siren, navigation, secrets
-resources/      the fonts, vendored and subsetted at build time
-tools/          the fixture API and the JavaScript unit tests
-docs/           DESIGN.md and the f3sctl API handoff notes
-```
+## Commit policy
 
-The companion is **not** a stub, and the watch is **not** self-contained. Every
-HTTP request, every Siren document, the navigation stack and all the secrets
-live in `src/pkjs/`; the watch renders frames and reports button presses. See
-[docs/DESIGN.md](docs/DESIGN.md) for why, and for the invariants a change must
-not break — chief among them that the watch never learns an href.
+Per-app commit rules are in each app's own AGENTS.md. Repo-wide: never commit
+anything holding an API key. `just check-secrets` scans the whole working tree,
+tracked or not, and is the enforcement.
 
-A per-file map is at the end of DESIGN.md. Every module also carries its own
-rationale at the top of the file; read that before changing it, because most of
-the non-obvious code is non-obvious for a reason that is written down.
-
-## 5. Commit Policy
-
-Commit everything under `src/`, `tools/`, `docs/`, `resources/`, `store/` and
-`screenshots/`, plus `README.md`, `AGENTS.md`, `Justfile`, `package.json`,
-`wscript` and `.gitignore`.
-
-Never commit:
-
-- `build/`, `*.pbw`, `*.elf`, `*.bin`, `*.o`, `*.map`
-- `.lock-waf*`, `.wafpickle*`, `config.log`
-- **anything holding an API key** — `just check-secrets` enforces this. `build/config-seed.json` is the one that
-  exists on purpose — it prefills the settings page for testing and is
-  gitignored twice over. A key belongs in a file outside the repo, mode 0600,
-  and is pasted into the settings page. Never into a commit, a command line
-  (where `ps` can read it) or a log.
-
-## 6. Troubleshooting
-
-- `pebble: command not found`: restore PATH from section 2.
-- Emulator does not start: run `just kill` then `just dev`.
-- Build fails: run `just clean` then `just rebuild`.
-- Change app version: update `package.json`, then run `just dev`.
-- `Waiting for the firmware to boot` forever: reset the emulator flash as
-  described in the Justfile (`just reset-flash` / `just reset-flash-emery`).
-  This is usually caused by two qemu processes sharing one flash image, so
-  avoid running two emulators against the same platform.
-- `pebble emu-button` errors with `empty group`: the action comes first, e.g.
-  `pebble emu-button --emulator emery click select`. The bare form fails while
-  argparse formats its usage message, which looks like a hang.
-- The watch shows hollow boxes instead of characters: the font subset in
-  `package.json` does not cover them. See the font notes in DESIGN.md.
-- `pebble install --phone` fails with `[Errno 111] Connection refused`: the
-  phone's Dev Connection has switched itself off again, or the `adb forward`
-  has gone. Check `adb forward --list` and re-enable Dev Connection under
-  Devices → ⋮. See [docs/SIDELOADING.md](docs/SIDELOADING.md).
-- The watch says `Auth` / `unauthorized` against a server you know the key
-  works on: suspect the key that was *typed*, not the key itself. Long strings
-  entered with `adb shell input text` come out corrupted. Verify the stored
-  value by hash, never by eye — SIDELOADING.md has the procedure.
-
-Last updated: August 16, 2026
+Last updated: August 17, 2026
 Maintained for: RESTForge agents

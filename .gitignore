@@ -1,34 +1,17 @@
-# Pebble SDK build artifacts
-build/
-*.pbw
-*.elf
-*.bin
-*.raw.bin
-*.map
-*.o
+# Repository-wide ignores. Anything specific to one of the two apps lives in
+# that app's own .gitignore (pebble/.gitignore, flutter/.gitignore).
 
-# Waf build system temporary files
-.lock-waf*
-.wafpickle*
-config.log
-
-# Auto-generated files
-src/message_keys.auto.c
-build/src/message_keys.auto.c
-build/include/message_keys.auto.h
-build/*/resource_ids.auto.*
-build/*/appinfo.auto.c
-build/*/pebble_app.ld.auto
-build/*/app_resources.pbpack
-build/*/system_resources.resball
-
-# Settings-page seed data — contains API secrets, never commit it.
-# build/ is already ignored; this covers a copy left anywhere else.
-config-seed.json
+# Key material. `just check-secrets` enforces that none of it reaches a file
+# here, but an accidentally-placed key file must not be committable either.
 *.apikey
 
-# Logs and locks
+# Agent and editor state
+.claude/
+.serena/
+.cursor/
+.idea/
+*.iml
+.vscode/
+
+# Logs
 *.log
-.lock-*
-.cursor
-.claude

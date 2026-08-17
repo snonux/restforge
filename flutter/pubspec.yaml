@@ -1,0 +1,33 @@
+name: restforge
+description: "A generic Siren hypermedia browser for Android."
+publish_to: 'none'
+
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP. dart:io's HttpClient would do, but package:http keeps the request
+  # layer testable without a socket — the Pebble app's http.js has the same
+  # shape for the same reason.
+  http: ^1.2.2
+
+  # Backend definitions minus their secrets. Nothing sensitive goes here.
+  shared_preferences: ^2.3.2
+
+  # Secrets, and only secrets. Backed by the Android Keystore via
+  # EncryptedSharedPreferences, so an API key is not sitting in a
+  # world-readable XML file the way a plain preference would be.
+  flutter_secure_storage: ^9.2.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

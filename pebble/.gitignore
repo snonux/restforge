@@ -1,0 +1,32 @@
+# Pebble SDK build artifacts
+build/
+*.pbw
+*.elf
+*.bin
+*.raw.bin
+*.map
+*.o
+
+# Waf build system temporary files
+.lock-waf*
+.wafpickle*
+config.log
+
+# Auto-generated files
+src/message_keys.auto.c
+build/src/message_keys.auto.c
+build/include/message_keys.auto.h
+build/*/resource_ids.auto.*
+build/*/appinfo.auto.c
+build/*/pebble_app.ld.auto
+build/*/app_resources.pbpack
+build/*/system_resources.resball
+
+# Settings-page seed data — contains API secrets, never commit it.
+# build/ is already ignored; this covers a copy left anywhere else.
+config-seed.json
+
+# Locks
+.lock-*
+
+# Editor, agent and key-material ignores are repo-wide; see ../.gitignore.
