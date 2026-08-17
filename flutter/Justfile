@@ -88,9 +88,11 @@ check-secrets:
 build-apk:
     {{FLUTTER}} build apk --release --split-per-abi
 
-# ARM64 only — the modern-phone case
+# ARM64 only — the modern-phone case. --split-per-abi is required here too:
+# without it Flutter still names the single output app-release.apk, not
+# app-arm64-v8a-release.apk, and install-apk (below) would not find it.
 build-apk-arm64:
-    {{FLUTTER}} build apk --release --target-platform android-arm64
+    {{FLUTTER}} build apk --release --target-platform android-arm64 --split-per-abi
 
 # Install the arm64 release APK on the connected device
 install-apk:

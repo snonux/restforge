@@ -210,10 +210,84 @@ wrapping a model.
   feature (`test/screens/home_screen_test.dart` is the existing example).
 - **No test may require a physical device or emulator.** `just test` has to
   run in CI and in a fast local loop with neither attached; anything that
-  only proves itself on hardware belongs in the manual checks in section 7,
+  only proves itself on hardware belongs in the manual checks in section 8,
   not in `test/`.
 
-## 6. Commit Policy
+## 6. Release Signing
+
+This section exists because the watchapp side of this repo lost real days to
+build-path friction that only showed up once someone tried to get a build onto
+actual hardware (see `pebble/docs/SIDELOADING.md`: the companion app not being
+called "Pebble", the developer connection needing two switches in two
+different places, `adb shell input text` silently corrupting a long API key).
+None of that is Android-specific, but the lesson — write down the exact thing
+that bit you, with the command that proves it, not a general reminder to "be
+careful" — applies here too. What follows is the Android/Gradle equivalent,
+recorded the same way.
+
+### How the signing config works
+
+`android/app/build.gradle.kts` loads `android/key.properties` at evaluation
+time (`storePassword`, `keyPassword`, `keyAlias`, `storeFile`) and, only if
+that file exists, registers a `release` entry under `signingConfigs`. The
+`release` build type uses it when present and falls back to
+`signingConfigs.debug` — the same debug-signed behaviour this file had before
+release signing existed — when it is not. This is the standard Flutter
+template shape (a `Properties`-loading block at the top of `build.gradle.kts`,
+adapted here), not a bespoke mechanism, so a future reader who has seen one
+Flutter release-signing setup has seen this one.
+
+`android/key.properties` is not committed and must never be: it is listed in
+both `flutter/.gitignore` (`android/key.properties`, `*.jks`, `*.keystore`)
+and `flutter/android/.gitignore` (`key.properties`, `**/*.jks`,
+`**/*.keystore`) — belt and braces, because the app-module `.gitignore` is the
+one that would actually stop `git add android/` from picking it up. Both were
+already correct before this task; nothing needed adding.
+
+Consequence worth internalising: **a fresh clone has no `key.properties` and
+therefore no real release signing**, on purpose. `flutter build apk --release`
+still succeeds — it produces a debug-signed APK, installable on a device with
+the debug key already trusted (e.g. via `flutter run`), but not upload-able to
+a Play Store listing signed with a real key. Verified end to end: with no
+`android/key.properties` present, `build-apk` and `build-apk-arm64` both
+produced real, non-zero-byte APKs (17-18 MB) whose signer, checked with
+`apksigner verify --print-certs`, was `CN=Android Debug`. Generating a test
+keystore (`keytool -genkeypair`, kept outside the repo entirely, in
+`/tmp/.../scratchpad/`, never under `flutter/`) and pointing a scratch
+`key.properties` at it made the same build produce an APK signed with that
+key instead — confirming the conditional actually switches, not just that it
+doesn't crash. Deleting the scratch `key.properties` afterwards flipped the
+build straight back to debug signing with no other change needed.
+
+### The bug this task found: `build-apk-arm64` and `install-apk` disagreed on a filename
+
+`build-apk-arm64` ran `flutter build apk --release --target-platform
+android-arm64` without `--split-per-abi`. Flutter's ABI filtering and its
+per-ABI output naming are two separate flags: filtering to one ABI without
+also asking for split output still names the single APK `app-release.apk`,
+not `app-arm64-v8a-release.apk`. `install-apk`, meanwhile, has always run
+`adb install -r build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`. Read
+in isolation, both recipes look right; run back to back — the documented daily
+pairing per `README.md` — `install-apk` installs a stale APK left over from a
+previous `build-apk` run, or fails outright if none exists. This is the kind
+of thing that only surfaces by actually running the pair, which is why this
+task ran every recipe rather than reading the Justfile and reasoning that it
+looked fine. Fixed by adding `--split-per-abi` to `build-apk-arm64`; confirmed
+by rerunning it and checking the output filename directly.
+
+### What could not be verified here
+
+No Android device or emulator was available in this environment
+(`adb devices` lists none). `install-apk` was run anyway to see its failure
+mode: `adb: no devices/emulators found`, a clean non-zero exit rather than a
+silent no-op, which is the best available confirmation the recipe fails
+correctly instead of "working" by doing nothing. Whether an `adb install -r`
+of a real release-signed (not debug-fallback) APK actually launches and runs
+on hardware is unverified — that step needs a connected device and, per
+section 8, a way to check the exact key material used matches by hash rather
+than by eye.
+
+## 7. Commit Policy
 
 Commit everything under `lib/`, `test/`, `android/`, `linux/`, plus
 `pubspec.yaml`, `pubspec.lock`, `analysis_options.yaml`, `Justfile`,
@@ -231,7 +305,7 @@ Never commit:
 `pubspec.lock` is committed: this is an application, not a library, and a
 reproducible dependency set is worth more than automatic minor upgrades.
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 - `flutter: command not found`: restore PATH from section 2.
 - Gradle fails with an unsupported JDK: Flutter needs JDK 17; see section 1.

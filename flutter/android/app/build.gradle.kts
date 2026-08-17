@@ -1,8 +1,27 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Release signing, driven by android/key.properties (storePassword, keyPassword,
+// keyAlias, storeFile). That file is gitignored — see flutter/.gitignore and
+// flutter/android/.gitignore, plus AGENTS.md sections 5 and 6 — and is never
+// present on a fresh clone. Loaded here, rather than failing the build, so
+// `flutter build apk --release` still works with no manual setup: the
+// `signingConfigs.release` block below is only wired up when the file and the
+// keystore it points at both exist; otherwise the release build type falls
+// back to the debug signing config, same as it did before this file existed.
+val keyPropertiesFile = rootProject.file("key.properties")
+val keyProperties = Properties()
+val hasReleaseSigning = keyPropertiesFile.exists().also { exists ->
+    if (exists) {
+        FileInputStream(keyPropertiesFile).use { keyProperties.load(it) }
+    }
 }
 
 android {
@@ -30,11 +49,29 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(keyProperties.getProperty("storeFile"))
+                storePassword = keyProperties.getProperty("storePassword")
+                keyAlias = keyProperties.getProperty("keyAlias")
+                keyPassword = keyProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Real signing when android/key.properties exists (see the block
+            // above); otherwise fall back to the debug keys so a fresh clone
+            // with no keystore configured still produces an installable,
+            // if unpublishable, APK. `flutter build apk --release` must never
+            // hard-fail for lack of a keystore.
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
