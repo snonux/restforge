@@ -90,13 +90,23 @@ pubspec.yaml            dependencies and app metadata
 analysis_options.yaml   lints
 Justfile                run/build/test/check shortcuts
 lib/main.dart           entry point, theme
-lib/screens/            the UI
+lib/screens/            the UI: one StatefulWidget/State per screen
 lib/services/           HTTP, Siren, navigation, actions, settings, secrets
-lib/models/             value types for Siren documents and rendered frames
-test/                   unit and widget tests
+lib/models/             value types: Siren documents, rendered frames,
+                         Result/Failure (see section 5)
+test/                   unit and widget tests, mirroring lib/'s subfolders
 android/                Android host project (INTERNET permission lives here)
 linux/                  Linux desktop host project, for development
 ```
+
+A file lives under `models/` if it is a value with no behaviour beyond
+reading itself (a Siren document, a rendered frame, a `Result`); under
+`services/` if it does I/O, holds mutable state, or coordinates other
+services (HTTP, navigation, the action pipeline); under `screens/` if it is a
+widget a route can push. A type never imports across that grain backwards —
+`models/` does not import `services/` or `screens/`, `services/` does not
+import `screens/` — so a model stays trivially unit-testable and a service
+stays testable without `flutter_test`.
 
 The port follows the watchapp's module split rather than inventing a new one,
 because that split is along the concerns the design cares about and the tests
@@ -124,7 +134,86 @@ that particular defence is not available and not needed. Do not port
 `appmessage.js`, `doc.c`, `comm.c` or the `win_*.c` layout logic — port what
 they were carrying, not the pipe.
 
-## 5. Commit Policy
+## 5. App Conventions
+
+These four decisions were made once, before any service existed, so that
+nobody has to re-decide them mid-screen. Changing one is a conversation, not
+a drive-by in a PR.
+
+### State management
+
+Plain `ChangeNotifier`, exposed to the widget tree with `InheritedNotifier`
+(or the `ListenableBuilder`/`AnimatedBuilder` a screen already has), is the
+default for anything a screen needs to rebuild against — the current
+document, the in-flight request, the current backend. No state-management
+package (`provider`, `riverpod`, `bloc`, ...) is added unless a screen's
+actual need outgrows what those two SDK classes cover cleanly, and the
+reason is written down at the point it's added.
+
+Reasoning: this app is a browser for one document at a time. The state that
+changes is "which document is on screen, and what happened to the last
+request for it" — a shape `ChangeNotifier` already fits without asking every
+screen to learn a second vocabulary for the same idea. Reaching for a
+dependency before a documented need exceeds `ChangeNotifier` is exactly the
+premature abstraction YAGNI warns against, and it would be a second way to
+do the one thing this app does with state, which is a coupling cost with no
+buyer yet.
+
+### Error model
+
+A transport failure is a value returned to the caller, never an exception
+thrown at it. `lib/models/failure.dart` and `lib/models/result.dart` give
+this shape:
+
+- `FailureKind` is the closed set of reasons a request did not produce a
+  usable result — `unreachable`, `timeout`, `auth`, `conflict`, `server`,
+  `client`, `parse`, `config` — carried over from the vocabulary in
+  `pebble/src/pkjs/http.js`. The distinction that matters most is
+  `unreachable` against every other kind: a request that never arrived says
+  nothing about the state of the thing it asked about, and must not be
+  rendered as if the server had answered.
+- `Failure` pairs a `FailureKind` with the HTTP status (0 when there wasn't
+  one) and a human-readable message.
+- `Result<T>` (`Ok<T>` / `Err<T>`) is what a service returns instead of `T`,
+  so a caller `switch`es on the outcome instead of wrapping the call in
+  try/catch.
+
+Reasoning: `pebble/docs/DESIGN.md` makes "a failed request is not an answer"
+an invariant for both apps — the last good document must stay on screen with
+the reason on top of it, never replaced by an empty one. An exception is the
+wrong vehicle for that: it unwinds past the point where the old document was
+still in scope, and a screen that forgets one `catch` silently drops the
+distinction the design exists to protect. A `Result` returned as an ordinary
+value makes forgetting to look at it a `null`/exhaustiveness question the
+analyzer catches, not a runtime surprise. This is also why the two types
+live in `lib/models/`: they carry no behaviour beyond being read, exactly
+like every other value type there (see section 4).
+
+### Where models, services and screens live
+
+Covered in section 4's layout table and the paragraph under it. The short
+version: no behaviour in `models/`, no widgets in `services/`, no direct I/O
+in `screens/` — a screen asks a service, a service returns a `Result`
+wrapping a model.
+
+### Test style
+
+- **Services get pure Dart unit tests** (`test/services/`, mirroring
+  `lib/services/`) — `package:test`/`flutter_test`'s non-widget API, no
+  `WidgetTester`, no platform channel. A service that needs a fake HTTP
+  backend gets one built in Dart (or points at the fixture Siren server, see
+  README.md), never a mock that needs a device.
+- **Models get pure Dart unit tests** (`test/models/`) for the same reason —
+  they have no widget to pump.
+- **Screens get widget tests** (`test/screens/`) via `testWidgets` and
+  `tester.pumpWidget`, asserting on what's rendered, never on a device
+  feature (`test/screens/home_screen_test.dart` is the existing example).
+- **No test may require a physical device or emulator.** `just test` has to
+  run in CI and in a fast local loop with neither attached; anything that
+  only proves itself on hardware belongs in the manual checks in section 7,
+  not in `test/`.
+
+## 6. Commit Policy
 
 Commit everything under `lib/`, `test/`, `android/`, `linux/`, plus
 `pubspec.yaml`, `pubspec.lock`, `analysis_options.yaml`, `Justfile`,
@@ -142,7 +231,7 @@ Never commit:
 `pubspec.lock` is committed: this is an application, not a library, and a
 reproducible dependency set is worth more than automatic minor upgrades.
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 - `flutter: command not found`: restore PATH from section 2.
 - Gradle fails with an unsupported JDK: Flutter needs JDK 17; see section 1.
