@@ -29,5 +29,23 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+  # Generates the Android launcher icon (mipmaps + adaptive icon) from
+  # assets/icon/icon.png below. Not a runtime dependency: it is a build-time
+  # tool, invoked by hand with `dart run flutter_launcher_icons` after the
+  # source artwork changes, not part of the app itself.
+  flutter_launcher_icons: ^0.14.4
+
 flutter:
   uses-material-design: true
+
+# Source artwork for `dart run flutter_launcher_icons`. Rasterised at
+# 1024x1024 from ../pebble/store/icon.svg — the same artwork the watchapp
+# ships in its store listing, so both apps present as the one product. The
+# background colour below is the SVG rect's fill; it shows through the 16%
+# inset the tool adds automatically around the adaptive icon's foreground
+# layer, so update both together if the artwork's background colour changes.
+flutter_launcher_icons:
+  android: true
+  image_path: "assets/icon/icon.png"
+  adaptive_icon_background: "#0A84FF"
+  adaptive_icon_foreground: "assets/icon/icon.png"
