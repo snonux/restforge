@@ -42,8 +42,7 @@
 /// its own to route to.
 ///
 /// **What this module does not own**, left to their own tasks exactly as
-/// `flutter/AGENTS.md` section 4 maps them: the idle-refresh clock
-/// (`nav.js`'s `scheduleIdle`/`idleRefresh`), the action policy — filling an
+/// `flutter/AGENTS.md` section 4 maps them: the action policy — filling an
 /// action's fields, confirming it, retrying a `409` — and everything to do
 /// with a notice or an overlay laid on top of a frame by an action's outcome
 /// (`nav.js`'s `setNotice`/`applyNotice`/`overlay`), following work that
@@ -51,9 +50,49 @@
 /// shortcuts (`quick.js`, already `home_screen.dart`'s job on this port —
 /// see that file's module comment). A coordinator wiring this module to
 /// those (`nav.js`'s `session.js`) is its own future task too.
+///
+/// **The idle-refresh clock** (`nav.js`'s `scheduleIdle`/`idleRefresh`/
+/// `idleRefreshable`) *is* owned here, and re-reads the document on top of
+/// the stack every [idleRefreshInterval] when nothing else is going on. Two
+/// things hold it off, mirroring the two `idleRefreshable()` checks beyond
+/// "there is a document with an address to refresh":
+///
+///  - **An outstanding action question.** `nav.js` weighs two flags for
+///    this — `overlayShowing` (an open confirmation) and the
+///    `actionPending()` hook (still true in the gap after the watch
+///    dismisses the confirmation without answering it, which clearing
+///    `overlayShowing` alone does not cover). This port folds both into one:
+///    `action_service.dart`'s `hasPending` already stays true across exactly
+///    that gap — it is cleared only by answering or cancelling the pending
+///    action, never by a dialog merely closing — so a single hook, set with
+///    [setActionPendingCheck], covers what `nav.js` needed two flags for.
+///    Mirrors `setActionPendingCheck` in `nav.js`, including the reasoning
+///    in its comment there for why this is a hook and not a held
+///    `ActionService` reference: `action_service.dart` needs nothing from
+///    this module, and requiring it here would let two modules require
+///    each other for no reason either would use.
+///  - **The app not being in the foreground.** New in this port — a watch
+///    app has no equivalent, because a Pebble app does not keep running
+///    against someone else's API once the wearer stops looking at it the
+///    way a backgrounded phone app could. [didChangeAppLifecycleState]
+///    (`WidgetsBindingObserver`'s method — a caller registers this service
+///    with `WidgetsBinding.instance.addObserver` once one exists to do the
+///    registering) is how a screen tells this module the app went to the
+///    background or came back, so idle refresh does not poll a server, and
+///    spend battery, for a screen nobody is reading.
+///
+/// A failed idle refresh goes through the same [_fetch] every other refresh
+/// does, so it is already held to the invariant this file exists to protect
+/// — see above: [document] keeps reading the last stack frame that actually
+/// arrived, and a background refresh nobody asked for is the last place that
+/// should ever be allowed to blank the screen.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart'
+    show AppLifecycleState, WidgetsBindingObserver;
 
 import '../models/failure.dart';
 import '../models/result.dart';
@@ -61,6 +100,11 @@ import '../models/siren.dart';
 import 'http_service.dart';
 import 'render_service.dart' as render;
 import 'settings_service.dart';
+
+/// How often to re-read the visible document when nothing else is going on.
+/// A screen someone is looking at should not be showing minute-old state.
+/// Mirrors `IDLE_MS` in `nav.js`.
+const Duration idleRefreshInterval = Duration(seconds: 60);
 
 /// What is on screen right now, independent of *which* document it is.
 ///
@@ -118,22 +162,50 @@ class _StackFrame {
   final String title;
 }
 
-/// Owns the navigation stack and every fetch that changes it.
+/// Owns the navigation stack, every fetch that changes it, and the
+/// idle-refresh clock — see the module comment.
 ///
 /// [HttpService] is injected, exactly as `render_service.dart` and
 /// `http_service.dart` themselves are composed with injected collaborators
 /// — a test wires a [HttpService] built on `package:http`'s `MockClient`
-/// (see `test/services/http_service_test.dart`), never a real socket.
-class NavService extends ChangeNotifier {
-  NavService({required HttpService http}) : _http = http;
+/// (see `test/services/http_service_test.dart`), never a real socket. The
+/// idle timer's factory is injected too, exactly as `live_service.dart`
+/// injects its own — a test drives [idleRefreshInterval] without an actual
+/// 60-second wait (see `test/services/nav_service_test.dart`'s `FakeTimers`).
+class NavService extends ChangeNotifier with WidgetsBindingObserver {
+  NavService({
+    required HttpService http,
+    Timer Function(Duration duration, void Function() callback)? createTimer,
+  }) : _http = http,
+       _createTimer =
+           createTimer ?? ((duration, callback) => Timer(duration, callback));
 
   final HttpService _http;
+  final Timer Function(Duration duration, void Function() callback)
+  _createTimer;
 
   final List<_StackFrame> _stack = [];
 
   Backend? _backend;
   DocumentState _state = DocumentState.ok;
   Failure? _failure;
+
+  /// Whether an action confirmation is still awaiting an answer — consulted
+  /// by [_idleRefreshable]. Defaults to "never pending", the same unwired
+  /// default `actionPending` has in `nav.js` before `session.js` runs its
+  /// `setActionPendingCheck`. See the module comment for why this is a hook
+  /// rather than a held `ActionService` reference.
+  bool Function() _actionPending = () => false;
+
+  /// The app's current lifecycle phase, as last reported through
+  /// [didChangeAppLifecycleState]. Starts [AppLifecycleState.resumed]:
+  /// nothing has told this service otherwise yet, and a freshly-launched app
+  /// is in the foreground — mirrors starting from "nothing pending" for the
+  /// action hook above, for the same reason (the unwired default should not
+  /// itself suppress the clock).
+  AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
+
+  Timer? _idleTimer;
 
   /// The backend currently open, or null before [openRoot] has ever been
   /// called. A live accessor rather than a value handed out once — mirrors
@@ -157,8 +229,9 @@ class NavService extends ChangeNotifier {
   /// arrived, or right after [openRoot] has reset the stack for a new
   /// backend and before its root has landed — there is nothing to keep
   /// showing at that point because nothing has been shown yet.
-  render.RenderedDocument? get document =>
-      _stack.isEmpty ? null : render.document(_stack.last.entity, _stack.last.title);
+  render.RenderedDocument? get document => _stack.isEmpty
+      ? null
+      : render.document(_stack.last.entity, _stack.last.title);
 
   /// True once there is a document below the one on screen to pop back to
   /// with [back]. False for the backend's root document — what "back" means
@@ -181,7 +254,7 @@ class NavService extends ChangeNotifier {
     _backend = backend;
     _state = DocumentState.loading;
     _failure = null;
-    notifyListeners();
+    _notify();
 
     final result = await _http.get(backend, backend.baseUrl);
     switch (result) {
@@ -195,16 +268,16 @@ class NavService extends ChangeNotifier {
         if (problem != null) {
           _state = DocumentState.error;
           _failure = Failure(kind: FailureKind.client, message: problem);
-          notifyListeners();
+          _notify();
           return;
         }
         _push(entity, href: backend.baseUrl, title: backend.name);
-        notifyListeners();
+        _notify();
         await _followStart(backend, entity);
       case Err(failure: final failure):
         _state = stateFor(failure.kind);
         _failure = failure;
-        notifyListeners();
+        _notify();
     }
   }
 
@@ -249,7 +322,7 @@ class NavService extends ChangeNotifier {
     if (href == null) {
       _state = DocumentState.ok;
       _failure = null;
-      notifyListeners();
+      _notify();
       return;
     }
     await _fetch(href, title: here.title, replace: true);
@@ -270,7 +343,7 @@ class NavService extends ChangeNotifier {
     }
     final child = entities[index];
     _push(child, href: child.follow('self'), title: child.label);
-    notifyListeners();
+    _notify();
   }
 
   /// Pops one document. A no-op at the backend's root — see [canGoBack].
@@ -284,7 +357,7 @@ class NavService extends ChangeNotifier {
     _stack.removeLast();
     _state = DocumentState.ok;
     _failure = null;
-    notifyListeners();
+    _notify();
   }
 
   /// Performs one fetch and applies its outcome to the stack. Shared by
@@ -294,21 +367,29 @@ class NavService extends ChangeNotifier {
   /// A failure never touches the stack: [document] keeps reading whatever
   /// was there before this call, which is precisely the invariant this
   /// module exists to protect — see the module comment.
-  Future<void> _fetch(String href, {required String title, required bool replace}) async {
+  Future<void> _fetch(
+    String href, {
+    required String title,
+    required bool replace,
+  }) async {
     final backend = _backend;
     if (backend == null) {
       return;
     }
     _state = DocumentState.loading;
     _failure = null;
-    notifyListeners();
+    _notify();
 
     final result = await _http.get(backend, href);
     switch (result) {
       case Ok(value: final response):
         final entity = Entity.fromJson(response.entity);
         if (replace && _stack.isNotEmpty) {
-          _stack[_stack.length - 1] = _StackFrame(entity: entity, href: href, title: title);
+          _stack[_stack.length - 1] = _StackFrame(
+            entity: entity,
+            href: href,
+            title: title,
+          );
         } else {
           _push(entity, href: href, title: title);
         }
@@ -318,12 +399,119 @@ class NavService extends ChangeNotifier {
         _state = stateFor(failure.kind);
         _failure = failure;
     }
-    notifyListeners();
+    _notify();
   }
 
   void _push(Entity entity, {String? href, String title = ''}) {
     _stack.add(_StackFrame(entity: entity, href: href, title: title));
     _state = DocumentState.ok;
     _failure = null;
+  }
+
+  /// Tells listeners something changed, then re-evaluates the idle timer
+  /// against the new state. Every place in this class that used to call
+  /// `notifyListeners()` directly calls this instead, so the idle clock is
+  /// reconsidered on every navigation event exactly as `nav.js`'s `send()`
+  /// reconsiders it (via `scheduleIdle()`) on every frame — a fetch starting,
+  /// landing, failing, a stack push or pop all count, because each one can
+  /// change what [_idleRefreshable] depends on (there may now be a document
+  /// with an address to refresh, or there may no longer be one).
+  void _notify() {
+    notifyListeners();
+    _scheduleIdle();
+  }
+
+  /// --- idle refresh ---------------------------------------------------
+  ///
+  /// Quiet on purpose, same as `nav.js`: no loading state is surfaced for an
+  /// idle refresh (the document already on screen is what stays up while it
+  /// runs, exactly as any other fetch), and a failure sets [failure] rather
+  /// than doing anything more intrusive. A refresh nobody asked for should
+  /// never take the screen away from them — see the module comment.
+
+  /// Wires this service to whichever state governs a pending action
+  /// confirmation, without holding a reference to whatever owns it — mirrors
+  /// `setActionPendingCheck` in `nav.js`; see the module comment for why a
+  /// hook and not a reference. [check] replaces whatever was wired before,
+  /// including the unwired default of "never pending".
+  void setActionPendingCheck(bool Function() check) {
+    _actionPending = check;
+  }
+
+  /// Called by whatever registers this service with
+  /// `WidgetsBinding.instance.addObserver` — see the module comment. Leaving
+  /// the foreground cancels the idle timer outright rather than letting it
+  /// fire once more and discover it should not have: the point is not to
+  /// wake the radio and hit a server for a screen nobody is looking at, and
+  /// a timer already in flight when the app backgrounds would do exactly
+  /// that. Returning to the foreground resumes it, mirroring `dismissed()`
+  /// in `nav.js` re-running `scheduleIdle()` once whatever was holding the
+  /// clock off no longer does.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleState = state;
+    if (_inForeground) {
+      _scheduleIdle();
+    } else {
+      _idleTimer?.cancel();
+      _idleTimer = null;
+    }
+  }
+
+  bool get _inForeground => _lifecycleState == AppLifecycleState.resumed;
+
+  /// Mirrors `idleRefreshable()` in `nav.js`, minus the `live.isLive()` and
+  /// `overlayShowing` checks — out of scope here, see the module comment —
+  /// plus [_inForeground], which has no equivalent there.
+  bool get _idleRefreshable =>
+      _stack.isNotEmpty &&
+      _stack.last.href != null &&
+      _inForeground &&
+      !_actionPending();
+
+  /// Mirrors `scheduleIdle()` in `nav.js`: cancels whatever was pending and,
+  /// if [_idleRefreshable] holds right now, arms a fresh [idleRefreshInterval]
+  /// timer. Called from [_notify] after every navigation event and from
+  /// [didChangeAppLifecycleState] on returning to the foreground, so a
+  /// reason to hold off that comes and goes between those events is picked
+  /// up without anything else having to remember to ask.
+  void _scheduleIdle() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    if (_idleRefreshable) {
+      _idleTimer = _createTimer(idleRefreshInterval, _idleRefresh);
+    } else {
+      // Worth a line, same as nav.js's comment on the equivalent branch: a
+      // background refresh that quietly stops happening looks like nothing
+      // at all, which is how the overlay-dismiss bug there went unnoticed
+      // until a live test caught it.
+      debugPrint(
+        'nav: idle refresh not scheduled (foreground=$_inForeground '
+        'pending=${_actionPending()} depth=${_stack.length})',
+      );
+    }
+  }
+
+  /// Mirrors `idleRefresh()` in `nav.js`: re-checks [_idleRefreshable] at
+  /// fire time (state may have changed in the [idleRefreshInterval] since
+  /// this was scheduled) and, if it still holds, re-fetches the document on
+  /// top of the stack through the same [_fetch] every other refresh uses —
+  /// so a failure here is already covered by the invariant [_fetch] itself
+  /// protects, and success or failure alike reschedules the clock via
+  /// [_notify] without this method having to do it directly.
+  Future<void> _idleRefresh() async {
+    _idleTimer = null;
+    if (!_idleRefreshable) {
+      return;
+    }
+    final here = _stack.last;
+    await _fetch(here.href!, title: here.title, replace: true);
+  }
+
+  @override
+  void dispose() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    super.dispose();
   }
 }

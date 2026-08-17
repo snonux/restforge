@@ -10,14 +10,20 @@
 // document), testRefreshAndEmbeddedHasNoAddress (refresh re-fetches; an
 // embedded document is re-rendered instead), testFailureKeepsTheDocument
 // (the invariant this module exists to protect), testUnreachableMapping
-// (status 0 / a connection failure is unreachable, not error), and
-// testSwitchingBackendsResetsTheStack.
+// (status 0 / a connection failure is unreachable, not error),
+// testSwitchingBackendsResetsTheStack, testIdleRefreshFires,
+// testIdleRefreshSuppressedByActionPendingHook, and (translated —
+// see below) testIdleRefreshFailureDoesNotOpenOverlay.
 //
 // Deliberately NOT ported: testPickerFrame (the backend picker is
 // home_screen.dart's job here, not nav_service.dart's — see the module
-// comment), everything under "idle refresh" (its own task), and
-// testSetSeqClearsOverlay (the watch's seq/overlay protocol has no
-// equivalent on this port).
+// comment), testIdleRefreshSuppressedByOverlay and testSetSeqClearsOverlay
+// (the watch's overlay/seq protocol has no equivalent on this port — see
+// nav_service.dart's module comment on why an outstanding action question
+// is a single hook here rather than nav.js's two flags; the gap those two
+// tests exist to pin, a dismissed-but-unanswered confirmation still
+// counting as pending, is action_service.dart's `hasPending` behaviour, and
+// is covered by that file's own tests instead).
 //
 // Added beyond test-nav.js, because this module's own comment calls them
 // out as things it owns: following startRel after the root (untested in
@@ -25,11 +31,17 @@
 // check, and the state sequence a fetch goes through (loading, then a
 // terminal state) with the document left untouched throughout — this is
 // where this port deliberately does more than nav.js can, see the module
-// comment on why.
+// comment on why. The "idle refresh" group adds two cases with no
+// pebble/tools/test-nav.js counterpart at all: the app leaving and
+// returning to the foreground (this port's own, Pebble-less, second
+// suppression condition), and an embedded document (no address to refresh)
+// holding the clock off, which test-nav.js's fixtures never happen to
+// exercise for idle refresh specifically.
 
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -41,7 +53,11 @@ import 'package:restforge/services/settings_service.dart';
 
 const String base = 'https://pantry.example/';
 
-final Backend backend = Backend(name: 'pantry', baseUrl: base, secret: 'open-sesame');
+final Backend backend = Backend(
+  name: 'pantry',
+  baseUrl: base,
+  secret: 'open-sesame',
+);
 
 final Map<String, dynamic> root = {
   'class': ['pantry'],
@@ -79,15 +95,92 @@ final Map<String, dynamic> shelves = {
   ],
 };
 
-http.Response jsonResponse(Object body, {int status = 200}) =>
-    http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+http.Response jsonResponse(Object body, {int status = 200}) => http.Response(
+  jsonEncode(body),
+  status,
+  headers: {'content-type': 'application/json'},
+);
+
+/// A fake, wall-clock-free timer, driven by [tick] — the Dart equivalent of
+/// test-nav.js's fake `setTimeout`/`tick()` (see the comment at the top of
+/// that file). Handed to [NavService] as `createTimer` by [Env] when a test
+/// passes one in, so [idleRefreshInterval] is driven without an actual
+/// 60-second wait.
+class FakeTimers {
+  Duration _elapsed = Duration.zero;
+  final List<_FakeTimer> _pending = [];
+
+  Timer createTimer(Duration duration, void Function() callback) {
+    final timer = _FakeTimer(this, _elapsed + duration, callback);
+    _pending.add(timer);
+    return timer;
+  }
+
+  void _remove(_FakeTimer timer) => _pending.remove(timer);
+
+  /// Advances the clock by [duration], firing every timer due at or before
+  /// the new time, earliest first. A fired callback may reschedule itself —
+  /// the idle refresh rearming its own timer once it settles, via
+  /// [NavService]'s own `_notify` — so the pending list is re-scanned after
+  /// each firing rather than snapshotted once, same as test-nav.js's
+  /// `tick()`. The short real delay after each firing lets the fetch a fired
+  /// timer starts (answered by the in-memory [MockClient] in [Env], not a
+  /// real socket) actually resolve before the next timer is chosen.
+  Future<void> tick(Duration duration) async {
+    final until = _elapsed + duration;
+    for (;;) {
+      _FakeTimer? next;
+      for (final timer in _pending) {
+        if (timer.fireAt <= until &&
+            (next == null || timer.fireAt < next.fireAt)) {
+          next = timer;
+        }
+      }
+      if (next == null) break;
+      _elapsed = next.fireAt;
+      _pending.remove(next);
+      next.callback();
+      for (var i = 0; i < 5; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+    _elapsed = until;
+  }
+}
+
+class _FakeTimer implements Timer {
+  _FakeTimer(this._clock, this.fireAt, this.callback);
+
+  final FakeTimers _clock;
+  final Duration fireAt;
+  final void Function() callback;
+  bool _active = true;
+
+  @override
+  void cancel() {
+    if (_active) {
+      _active = false;
+      _clock._remove(this);
+    }
+  }
+
+  @override
+  bool get isActive => _active;
+
+  // A one-shot timer never repeats, so it fires at most once — mirrors
+  // dart:async's own one-shot Timer, whose `tick` is 0 before firing and 1
+  // after. Nothing in NavService reads this; it exists only to satisfy the
+  // Timer interface.
+  @override
+  int get tick => _active ? 0 : 1;
+}
 
 /// A fake backend, driven the same way test-nav.js's FakeXHR is: a route
 /// table keyed by the exact URL requested, a log of what was requested, and
 /// a couple of hand-toggled switches ([unreachable], [gate]) for the
 /// failure and mid-flight cases those tests exist to cover.
 class Env {
-  Env() {
+  Env({FakeTimers? timers}) {
     final client = MockClient((request) async {
       requested.add('${request.method} ${request.url}');
       if (unreachable) {
@@ -104,7 +197,10 @@ class Env {
       }
       return jsonResponse(body);
     });
-    nav = NavService(http: HttpService(client: client, log: (_) {}));
+    nav = NavService(
+      http: HttpService(client: client, log: (_) {}),
+      createTimer: timers?.createTimer,
+    );
   }
 
   final Map<String, Object> routes = {base: root, '${base}shelves': shelves};
@@ -124,8 +220,10 @@ class Env {
   void reset() => requested.clear();
 }
 
-Row rowNamed(RenderedDocument page, String label) =>
-    page.rows.firstWhere((row) => row.label == label, orElse: () => throw StateError('no row "$label"'));
+Row rowNamed(RenderedDocument page, String label) => page.rows.firstWhere(
+  (row) => row.label == label,
+  orElse: () => throw StateError('no row "$label"'),
+);
 
 void main() {
   group('opening a backend', () {
@@ -143,7 +241,8 @@ void main() {
     test('a link row can be followed', () async {
       final env = Env();
       await env.nav.openRoot(backend);
-      final target = rowNamed(env.nav.document!, 'shelves').target as FetchTarget;
+      final target =
+          rowNamed(env.nav.document!, 'shelves').target as FetchTarget;
       env.reset();
 
       await env.nav.fetch(target.href, title: 'shelves');
@@ -174,21 +273,37 @@ void main() {
   });
 
   group('startRel', () {
-    test('is followed after the root, pushing a second document on top of it', () async {
-      final env = Env();
-      final startBackend = Backend(name: 'pantry', baseUrl: base, secret: 'open-sesame', startRel: 'shelves');
+    test(
+      'is followed after the root, pushing a second document on top of it',
+      () async {
+        final env = Env();
+        final startBackend = Backend(
+          name: 'pantry',
+          baseUrl: base,
+          secret: 'open-sesame',
+          startRel: 'shelves',
+        );
 
-      await env.nav.openRoot(startBackend);
+        await env.nav.openRoot(startBackend);
 
-      expect(env.requested, ['GET $base', 'GET ${base}shelves']);
-      expect(env.nav.document?.title, 'Shelves');
-      expect(env.nav.canGoBack, isTrue, reason: 'the root is still underneath it on the stack');
-    });
+        expect(env.requested, ['GET $base', 'GET ${base}shelves']);
+        expect(env.nav.document?.title, 'Shelves');
+        expect(
+          env.nav.canGoBack,
+          isTrue,
+          reason: 'the root is still underneath it on the stack',
+        );
+      },
+    );
 
     test('a rel the root does not offer just leaves the root open', () async {
       final env = Env();
-      final startBackend =
-          Backend(name: 'pantry', baseUrl: base, secret: 'open-sesame', startRel: 'no-such-rel');
+      final startBackend = Backend(
+        name: 'pantry',
+        baseUrl: base,
+        secret: 'open-sesame',
+        startRel: 'no-such-rel',
+      );
 
       await env.nav.openRoot(startBackend);
 
@@ -199,32 +314,41 @@ void main() {
   });
 
   group('an embedded entity', () {
-    test('opens without a request, and back returns to the previous document', () async {
-      final env = Env();
-      await env.nav.openRoot(backend);
-      final target = rowNamed(env.nav.document!, 'Top shelf').target as EmbeddedTarget;
-      env.reset();
+    test(
+      'opens without a request, and back returns to the previous document',
+      () async {
+        final env = Env();
+        await env.nav.openRoot(backend);
+        final target =
+            rowNamed(env.nav.document!, 'Top shelf').target as EmbeddedTarget;
+        env.reset();
 
-      env.nav.openEmbedded(target.index);
-      expect(env.requested, isEmpty);
-      expect(env.nav.document?.title, 'Top shelf');
-      expect(env.nav.canGoBack, isTrue);
+        env.nav.openEmbedded(target.index);
+        expect(env.requested, isEmpty);
+        expect(env.nav.document?.title, 'Top shelf');
+        expect(env.nav.canGoBack, isTrue);
 
-      env.nav.back();
-      expect(env.nav.document?.title, 'The pantry');
-      expect(env.nav.canGoBack, isFalse);
-    });
+        env.nav.back();
+        expect(env.nav.document?.title, 'The pantry');
+        expect(env.nav.canGoBack, isFalse);
+      },
+    );
 
     test('cannot be re-fetched; refresh re-renders it instead', () async {
       final env = Env();
       await env.nav.openRoot(backend);
-      final target = rowNamed(env.nav.document!, 'Top shelf').target as EmbeddedTarget;
+      final target =
+          rowNamed(env.nav.document!, 'Top shelf').target as EmbeddedTarget;
       env.nav.openEmbedded(target.index);
       env.reset();
 
       await env.nav.refresh();
 
-      expect(env.requested, isEmpty, reason: 'an embedded document has no address to refresh from');
+      expect(
+        env.requested,
+        isEmpty,
+        reason: 'an embedded document has no address to refresh from',
+      );
       expect(env.nav.document?.title, 'Top shelf');
     });
   });
@@ -253,7 +377,8 @@ void main() {
     test('discards the old stack', () async {
       final env = Env();
       await env.nav.openRoot(backend);
-      final target = rowNamed(env.nav.document!, 'shelves').target as FetchTarget;
+      final target =
+          rowNamed(env.nav.document!, 'shelves').target as FetchTarget;
       await env.nav.fetch(target.href, title: 'shelves');
       expect(env.nav.canGoBack, isTrue);
 
@@ -294,25 +419,35 @@ void main() {
       await env.nav.refresh();
 
       final after = env.nav.document!;
-      expect([for (final row in after.rows) row.label], beforeLabels,
-          reason: 'the last good document is untouched by a failure');
+      expect(
+        [for (final row in after.rows) row.label],
+        beforeLabels,
+        reason: 'the last good document is untouched by a failure',
+      );
       expect(after.title, before.title);
       expect(env.nav.state, DocumentState.error);
-      expect(env.nav.failure?.message, 'no such thing here', reason: "the server's own wording is readable");
+      expect(
+        env.nav.failure?.message,
+        'no such thing here',
+        reason: "the server's own wording is readable",
+      );
     });
 
-    test('a connection failure maps to unreachable, not error, and still keeps the document', () async {
-      final env = Env();
-      await env.nav.openRoot(backend);
-      final beforeTitle = env.nav.document!.title;
-      env.unreachable = true;
-      env.reset();
+    test(
+      'a connection failure maps to unreachable, not error, and still keeps the document',
+      () async {
+        final env = Env();
+        await env.nav.openRoot(backend);
+        final beforeTitle = env.nav.document!.title;
+        env.unreachable = true;
+        env.reset();
 
-      await env.nav.refresh();
+        await env.nav.refresh();
 
-      expect(env.nav.state, DocumentState.unreachable);
-      expect(env.nav.document?.title, beforeTitle);
-    });
+        expect(env.nav.state, DocumentState.unreachable);
+        expect(env.nav.document?.title, beforeTitle);
+      },
+    );
   });
 
   group('state transitions', () {
@@ -327,20 +462,150 @@ void main() {
       expect(states.last, DocumentState.ok);
     });
 
-    test('the document is untouched while a fetch is still in flight', () async {
-      final env = Env();
-      await env.nav.openRoot(backend);
-      final beforeTitle = env.nav.document!.title;
-      env.gate = Completer<void>();
+    test(
+      'the document is untouched while a fetch is still in flight',
+      () async {
+        final env = Env();
+        await env.nav.openRoot(backend);
+        final beforeTitle = env.nav.document!.title;
+        env.gate = Completer<void>();
 
-      final inFlight = env.nav.refresh();
-      expect(env.nav.state, DocumentState.loading);
-      expect(env.nav.document?.title, beforeTitle,
-          reason: 'a loading fetch must not blank the screen while it runs');
+        final inFlight = env.nav.refresh();
+        expect(env.nav.state, DocumentState.loading);
+        expect(
+          env.nav.document?.title,
+          beforeTitle,
+          reason: 'a loading fetch must not blank the screen while it runs',
+        );
 
-      env.gate!.complete();
-      await inFlight;
-      expect(env.nav.state, DocumentState.ok);
-    });
+        env.gate!.complete();
+        await inFlight;
+        expect(env.nav.state, DocumentState.ok);
+      },
+    );
+  });
+
+  group('idle refresh', () {
+    // The idle clock re-reads the document on top of the stack every
+    // idleRefreshInterval when nothing else is going on — see
+    // nav_service.dart's module comment for the two things that hold it off
+    // and why a background refresh's failure is already covered by the same
+    // invariant every other fetch is.
+    test(
+      're-reads the document on top of the stack after the idle interval',
+      () async {
+        final timers = FakeTimers();
+        final env = Env(timers: timers);
+        await env.nav.openRoot(backend);
+        env.reset();
+
+        await timers.tick(idleRefreshInterval);
+
+        expect(env.requested, [
+          'GET $base',
+        ], reason: 'the visible document is re-read when idle');
+      },
+    );
+
+    test(
+      'a pending-action hook suppresses the refresh; the unwired default does not',
+      () async {
+        final timers = FakeTimers();
+        final env = Env(timers: timers);
+        await env.nav.openRoot(backend);
+        env.reset();
+
+        // With nothing wired, an action question is never pending as far as
+        // NavService is concerned — mirrors the unwired default nav.js's
+        // actionPending has before session.js runs setActionPendingCheck.
+        await timers.tick(idleRefreshInterval);
+        expect(
+          env.requested,
+          ['GET $base'],
+          reason:
+              'with no hook wired, idle refresh behaves as if nothing is pending',
+        );
+
+        env.reset();
+        env.nav.setActionPendingCheck(() => true);
+        await timers.tick(idleRefreshInterval);
+        expect(
+          env.requested,
+          isEmpty,
+          reason:
+              'a pending-action hook that answers true suppresses the idle refresh',
+        );
+      },
+    );
+
+    test(
+      'is suppressed while the app is not in the foreground, and resumes on returning',
+      () async {
+        final timers = FakeTimers();
+        final env = Env(timers: timers);
+        await env.nav.openRoot(backend);
+        env.nav.didChangeAppLifecycleState(AppLifecycleState.paused);
+        env.reset();
+
+        await timers.tick(idleRefreshInterval);
+        expect(
+          env.requested,
+          isEmpty,
+          reason:
+              'polling somebody else\'s API from the background is not something the user asked for',
+        );
+
+        env.nav.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        await timers.tick(idleRefreshInterval);
+        expect(env.requested, [
+          'GET $base',
+        ], reason: 'returning to the foreground resumes the clock');
+      },
+    );
+
+    test(
+      'an embedded document has no address, so nothing is scheduled',
+      () async {
+        final timers = FakeTimers();
+        final env = Env(timers: timers);
+        await env.nav.openRoot(backend);
+        final target =
+            rowNamed(env.nav.document!, 'Top shelf').target as EmbeddedTarget;
+        env.nav.openEmbedded(target.index);
+        env.reset();
+
+        await timers.tick(idleRefreshInterval);
+
+        expect(
+          env.requested,
+          isEmpty,
+          reason:
+              'an embedded document cannot be re-fetched at all, idle or otherwise',
+        );
+      },
+    );
+
+    test(
+      'a failed idle refresh keeps the document on screen and reports the failure',
+      () async {
+        final timers = FakeTimers();
+        final env = Env(timers: timers);
+        await env.nav.openRoot(backend);
+        final beforeTitle = env.nav.document!.title;
+        env.routes.clear();
+        env.reset();
+
+        await timers.tick(idleRefreshInterval);
+
+        expect(
+          env.nav.document?.title,
+          beforeTitle,
+          reason:
+              'a refresh nobody asked for must never blank the screen, same as any other failure',
+        );
+        expect(env.nav.state, DocumentState.error);
+        expect(env.requested, ['GET $base']);
+      },
+    );
   });
 }
