@@ -63,13 +63,19 @@
 /// task depending on this one: opening a property
 /// ([render.DetailTarget]) sets [SessionService.detail], but the full,
 /// scrollable reading view for it is task t11's job
-/// (`pebble/src/c/win_detail.c`'s equivalent); confirming or supplying a
-/// value for an action ([SessionService.question]) is task u11's; watching a
-/// job's progress ([SessionService.isLive], [SessionService.notice] for a
-/// running action) is task v11's. This screen calls
-/// [SessionService.activate] for every row exactly the same way regardless
-/// of which of those follows, so none of those tasks has to change how a row
-/// is pressed — only what appears once [SessionService] reacts to it.
+/// (`pebble/src/c/win_detail.c`'s equivalent); watching a job's progress
+/// ([SessionService.isLive], [SessionService.notice] for a running action)
+/// is task v11's. This screen calls [SessionService.activate] for every row
+/// exactly the same way regardless of which of those follows, so none of
+/// those tasks has to change how a row is pressed — only what appears once
+/// [SessionService] reacts to it.
+///
+/// **Confirming or supplying a value for an action**
+/// ([SessionService.question]) is task u11's, and is the one exception to
+/// "this file only decides how a row looks": [build] wraps the whole screen
+/// in [ConfirmationSheetHost], which owns showing/hiding the modal sheet —
+/// see that file's module comment for why that wiring is one line here and
+/// everything else lives there.
 library;
 
 import 'package:flutter/material.dart';
@@ -78,6 +84,7 @@ import '../models/failure.dart';
 import '../services/nav_service.dart' show DocumentState;
 import '../services/render_service.dart' as render;
 import '../services/session.dart';
+import 'confirmation_sheet.dart';
 
 class DocumentScreen extends StatelessWidget {
   const DocumentScreen({super.key, required this.session});
@@ -94,34 +101,42 @@ class DocumentScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: session,
-      builder: (context, _) {
-        return PopScope(
-          // Whenever there is somewhere in SessionService's own stack to pop
-          // to, this route itself must not close — see the module comment.
-          canPop: !session.canGoBack,
-          onPopInvokedWithResult: (didPop, result) {
-            if (didPop) {
-              // canPop was already true: the platform popped this route (to
-              // the backend picker, say), and there is nothing left here to
-              // unwind first.
-              return;
-            }
-            session.back();
-          },
-          child: Scaffold(
-            appBar: AppBar(
-              title: Text(
-                session.document?.title ??
-                    session.backend?.name ??
-                    'RESTForge',
+    // ConfirmationSheetHost is the only piece of this file that knows about
+    // SessionService.question — wrapping the rest of the screen in it is
+    // task u11's entire wiring change here (see confirmation_sheet.dart's
+    // module comment).
+    return ConfirmationSheetHost(
+      session: session,
+      child: ListenableBuilder(
+        listenable: session,
+        builder: (context, _) {
+          return PopScope(
+            // Whenever there is somewhere in SessionService's own stack to
+            // pop to, this route itself must not close — see the module
+            // comment.
+            canPop: !session.canGoBack,
+            onPopInvokedWithResult: (didPop, result) {
+              if (didPop) {
+                // canPop was already true: the platform popped this route
+                // (to the backend picker, say), and there is nothing left
+                // here to unwind first.
+                return;
+              }
+              session.back();
+            },
+            child: Scaffold(
+              appBar: AppBar(
+                title: Text(
+                  session.document?.title ??
+                      session.backend?.name ??
+                      'RESTForge',
+                ),
               ),
+              body: _DocumentBody(session: session),
             ),
-            body: _DocumentBody(session: session),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }
@@ -156,7 +171,9 @@ class _DocumentBody extends StatelessWidget {
               failure: failure,
               unreachable: session.state == DocumentState.unreachable,
             ),
-          Expanded(child: _RowList(document: document, session: session)),
+          Expanded(
+            child: _RowList(document: document, session: session),
+          ),
         ],
       ),
     );
