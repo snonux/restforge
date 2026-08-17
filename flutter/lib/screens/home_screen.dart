@@ -4,12 +4,12 @@
 /// backend editor (`settings_screen.dart`, task r11): a general entry point
 /// that is always on screen, and — when nothing is configured yet — an
 /// empty state whose whole purpose is to lead there. Picking a backend from
-/// a non-empty list opens the same editor for now, because there is nowhere
-/// else to send it: fetching and rendering that backend's root document
-/// needs the navigation stack and coordinator (`nav.js`/`session.js`'s
-/// ports, tasks j11/p11) and the document screen (task s11), none of which
-/// exist yet. Once they do, a tap should open the document instead — the
-/// editor should stay reachable only from the general entry point.
+/// a non-empty list opens it for browsing — [_openBackend] builds a fresh
+/// [SessionService], starts its root fetch, and pushes `document_screen.dart`
+/// to render whatever comes back. The editor stays reachable only from the
+/// general entry point (the AppBar action and the empty state), never from a
+/// backend tap, so a tap on a configured row is always "browse this", never
+/// "edit this".
 ///
 /// **Saved shortcuts** (`quick.js`'s port, tasks w11/x11) are the second
 /// section, below the backend list — [_QuickSection]. Listing and removing
@@ -32,6 +32,8 @@
 /// deciding, before anything is shown, whether there is a document to show
 /// at all (see [QuickRunOutcome.backendMissing]).
 library;
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -134,6 +136,42 @@ class _HomeScreenState extends State<HomeScreen> {
     _reloadBackends();
   }
 
+  /// Opens [backend] at its root for browsing — the now-wired counterpart to
+  /// this screen's original skeleton behaviour of sending a backend tap to
+  /// the editor because there was nowhere else to send it (see the module
+  /// comment). Builds a fresh [SessionService] for the visit — this screen
+  /// keeps none around between visits, the same shape as [_runShortcut] —
+  /// starts the root fetch without awaiting it so [DocumentScreen] mounts
+  /// straight into the loading state rather than the home screen freezing
+  /// on a slow network, and pushes it. Whatever the fetch lands as — the
+  /// document, a failure, an unreachable — is [DocumentScreen]'s to render,
+  /// which is exactly the set of states it was written for. On return the
+  /// shortcut list is re-read (a shortcut may have been saved during the
+  /// visit, as with [_runShortcut]) and the session is disposed.
+  Future<void> _openBackend(Backend backend) async {
+    final session = SessionService(
+      http: widget.httpService ?? HttpService(),
+      quick: _quick,
+    );
+    unawaited(session.openBackend(backend));
+    // Defensive: there is no `await` between the unawaited call above and
+    // this check, so `mounted` cannot be false here yet — but the guard
+    // matches _runShortcut's shape and stays correct if a future change
+    // inserts an await before the push.
+    if (!mounted) {
+      session.dispose();
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => DocumentScreen(session: session)),
+    );
+    if (mounted) {
+      _reloadQuick();
+    }
+    session.dispose();
+  }
+
   /// Drops a saved shortcut and reports it — never silent, per
   /// `pebble/docs/DESIGN.md`-style "surface it" and this task's own
   /// requirement that removing a shortcut must be, too.
@@ -230,7 +268,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ? _EmptyState(onAddBackend: _openEditor)
                         : _BackendList(
                             backends: backends,
-                            onTapBackend: (_) => _openEditor(),
+                            onTapBackend: _openBackend,
                           ),
                   ),
                   if (quickRows.isNotEmpty)

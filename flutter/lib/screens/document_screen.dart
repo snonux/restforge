@@ -129,9 +129,8 @@ class DocumentScreen extends StatelessWidget {
   /// Always supplied by whoever pushes this screen with a [SessionService]
   /// that has already had [SessionService.openBackend] called on it — this
   /// screen itself never opens a backend, it only ever renders whatever is
-  /// already current. Nothing pushes it yet (see the module comment on this
-  /// task's scope: wiring it into `home_screen.dart`'s picker is a separate
-  /// concern), so today this is exercised only by
+  /// already current. Pushed by `home_screen.dart`'s `_openBackend`/`_runShortcut`
+  /// once a backend or a saved shortcut is opened, and also exercised by
   /// `test/screens/document_screen_test.dart`.
   final SessionService session;
 

@@ -138,9 +138,13 @@ void main() {
     expect(observer.pushCount, before + 1);
   });
 
-  testWidgets('tapping a configured backend leads to the editor', (
+  testWidgets('tapping a configured backend opens it for browsing', (
     tester,
   ) async {
+    // Tapping a backend now opens its document, not the editor — see
+    // home_screen.dart's _openBackend. The editor stays reachable from the
+    // AppBar action and the empty state (asserted above), never from a row
+    // tap, so a tap is always "browse this".
     await settings.saveBackends([
       const Backend(
         name: 'test lab',
@@ -148,13 +152,43 @@ void main() {
         secret: 'k',
       ),
     ]);
-    await pumpHome(tester);
+    final client = MockClient((request) async {
+      expect(request.method, 'GET');
+      expect(request.url.toString(), 'https://example.test/');
+      return http.Response(
+        jsonEncode({
+          'class': ['pantry'],
+          'title': 'The pantry',
+          'properties': {'kettle': 'cold'},
+        }),
+        200,
+        headers: const {'content-type': 'application/json'},
+      );
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorObservers: [observer],
+        home: HomeScreen(
+          settingsService: settings,
+          httpService: HttpService(client: client, log: (_) {}),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
     final before = observer.pushCount;
 
     await tester.tap(find.text('test lab'));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     expect(observer.pushCount, before + 1);
+    expect(find.byType(DocumentScreen), findsOneWidget);
+    // A property only the fetched document carries.
+    expect(find.text('kettle'), findsOneWidget);
+
+    // Pop so _openBackend's awaited push completes and the session is
+    // disposed (NavService's idle timer would otherwise leak).
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
   });
 
   group('saved shortcuts (x11)', () {

@@ -52,7 +52,7 @@ analyze:
 
 # Reformat every Dart source file in place
 format:
-    {{FLUTTER}} format lib test
+    {{FLUTTER}} format lib test integration_test
 
 # Everything that has to pass before a commit.
 #
@@ -101,6 +101,19 @@ install-apk:
 # Release bundle for Linux desktop
 build-linux:
     {{FLUTTER}} build linux --release
+
+# ─────────────────────────────────────────────
+# Screenshots
+# ─────────────────────────────────────────────
+
+# Capture README screenshots on a connected Android device/emulator.
+# Optional device id argument; auto-selects the Android device if absent.
+# Starts the fixture Siren API on the host and `adb reverse`-routes the
+# device to it. Not part of `just test`/`just check` (needs a device); run
+# by hand. See tools/capture-screenshots.sh and
+# integration_test/screenshot_test.dart.
+screenshots device="":
+    ./tools/capture-screenshots.sh {{device}}
 
 # ─────────────────────────────────────────────
 # Maintenance

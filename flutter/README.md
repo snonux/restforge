@@ -15,9 +15,43 @@ there is one device and no split. What carries over is everything that was
 never about the hardware — see [AGENTS.md](AGENTS.md) and
 [../pebble/docs/DESIGN.md](../pebble/docs/DESIGN.md).
 
-> **Status: skeleton.** The app shell, toolchain, checks and CI-able test loop
-> are in place. The browser itself is not written yet; the work is tracked as
-> agent tasks in this repository (`ask` / the `agent-task-management` skill).
+The screenshots below are the app browsing the fixture Siren API in
+[`pebble/tools/`](../pebble/tools/fake-siren-server.py) — an API deliberately
+chosen to share no vocabulary with any real server, so what they show is the
+one thing a single real backend cannot demonstrate: RESTForge rendering an
+API it had never seen until that fetch. Capture them yourself with
+`just screenshots` (see Development below).
+
+<p align="center">
+<img src="screenshots/pantry_01_backends.png" width="180" alt="The opening screen: a configured backend and a saved shortcut">
+<img src="screenshots/pantry_02_document.png" width="180" alt="A document: properties, a sub-entity, links and actions">
+<img src="screenshots/pantry_03_confirm.png" width="180" alt="Confirming an unsafe action before it is sent">
+<img src="screenshots/pantry_04_running.png" width="180" alt="Watching a still-running job">
+<img src="screenshots/pantry_05_done.png" width="180" alt="The job finished and the document was re-fetched">
+</p>
+
+What it does, all of it generic over Siren:
+
+- **Renders whatever a document offers** — properties, embedded sub-entities,
+  links and actions, in the order the server sent them, with no vocabulary
+  the app has not seen hidden or reworded.
+- **Follows links** by the href the server put in the document, resolved
+  against the configured base — never builds a URL.
+- **Asks before acting**: any method outside `GET`/`HEAD`/`OPTIONS`/`TRACE`
+  gets a confirmation, and a required field with no default is asked for out
+  loud rather than invented.
+- **Re-reads after acting**: every action is followed by an unconditional
+  re-fetch, so a `409` is re-read and never retried.
+- **Watches long-running jobs** without claiming them finished: a reply
+  about a different job, or one saying there is none, is *no news*, and
+  giving up is reported as giving up.
+- **Keeps a failed request from replacing the document** — the last good
+  document stays on screen with the reason laid over it.
+- **Saves shortcuts** to places you go often: long-press a link or action
+  row to save it, tap it on the opening screen to jump back. An action
+  shortcut re-reads the document that offered it and asks again, exactly as
+  if you had walked there; a withdrawn action is reported, never a quiet
+  failure.
 
 ## Requirements
 
@@ -44,9 +78,17 @@ just run-linux      # the fast loop: hot reload, no device needed
 just run-android    # on a connected device
 just test           # unit and widget tests, no device
 just check          # analysis + the genericity grep + the repo-wide secret scan
+just screenshots    # capture README screenshots on an Android device/emulator
 ```
 
 `just check` must print nothing.
+
+`just screenshots` drives the real app against the fixture Siren API on a
+connected Android device or emulator and writes PNGs to `screenshots/` —
+start an emulator first (`flutter emulators --launch <id>`), then run it.
+It starts the fixture on the host and `adb reverse`-routes the device to it
+automatically. See [`integration_test/screenshot_test.dart`](integration_test/screenshot_test.dart)
+for what it captures.
 
 There is a fixture Siren API in the watchapp's tree, and it works just as well
 here — it deliberately shares no vocabulary with anything real, so browsing it
