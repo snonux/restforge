@@ -114,6 +114,30 @@ void main() {
     test('an action without fields has none', () {
       expect(doc.actionByName('peek')?.fields.length, 0);
     });
+
+    test('a field is required only when the server says so explicitly', () {
+      final field = doc.actionByName('restart')?.fields.single;
+      expect(
+        field?.required,
+        isFalse,
+        reason: 'docJson\'s "force" field carries no "required" member',
+      );
+    });
+
+    test('a field marked required in JSON reports it', () {
+      final withRequired = Entity.fromJson({
+        'actions': [
+          {
+            'name': 'label',
+            'href': '/label',
+            'fields': [
+              {'name': 'text', 'type': 'text', 'required': true},
+            ],
+          },
+        ],
+      });
+      expect(withRequired.actionByName('label')?.fields.single.required, isTrue);
+    });
   });
 
   group('method', () {

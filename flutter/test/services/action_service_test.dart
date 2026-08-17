@@ -10,22 +10,25 @@
 // comment), testRequiredCheckboxFillsFromTheConfirmation,
 // testConflictRefetchesAndDoesNotRetryWithoutConfirmation (minus the
 // re-fetch, same reason -- what is checked here is the "does not retry"
-// half), testAuthFailureDoesNotRefetch (same), testWithdrawnAction, and
-// testDefaultsAreUsedWithoutAsking.
+// half), testAuthFailureDoesNotRefetch (same), testWithdrawnAction,
+// testDefaultsAreUsedWithoutAsking, testRequiredFieldIsAskedFor,
+// testNothingHeardSendsNothing and testSeveralMissingFieldsAreRefused
+// (n11 -- now that siren.dart's Field models "required", fillFields can
+// tell a required field with no default apart from an optional one, and
+// ActionService.answerValue is the reply to the "say a value" prompt that
+// distinction drives).
 //
 // Deliberately NOT ported: testConfirmedActionRetriesOnce,
 // testRetryIsNotRepeated and testRetryExpiresAfterTheTTL (the bounded 409
-// retry -- its own task, m11) and testRequiredFieldIsAskedFor,
-// testNothingHeardSendsNothing and testSeveralMissingFieldsAreRefused (the
-// required-field prompt -- its own task, n11; siren.dart's Field does not
-// model "required" yet, so there is nothing to drive that logic with here).
+// retry -- its own task, m11).
 //
 // Added beyond test-actions.js: direct coverage of isSafeMethod/safeMethods
 // (test-actions.js only exercises the split indirectly, through
 // brew/peek), confirmationText's fallback sentence, and a field with
-// neither a checkbox nor a default being left out of what is sent -- the
-// explicit "or refused" behaviour this port stops at, see
-// action_service.dart's module comment.
+// neither a checkbox nor a default being left out of what is sent when it
+// is not required, mirroring the same "nothing to safely guess with" branch
+// of fieldValues() -- required is what tips that into a question or a
+// refusal instead.
 
 import 'dart:convert';
 
@@ -78,6 +81,7 @@ Entity root({List<Map<String, dynamic>>? actions}) => Entity.fromJson({
             {
               'name': 'confirm',
               'type': 'checkbox',
+              'required': true,
               'title': 'The kettle is still hot. Cool it anyway?',
             },
           ],
@@ -400,40 +404,163 @@ void main() {
         {
           'name': 'text',
           'type': 'text',
+          'required': true,
           'title': 'What should the jar say?',
           'value': 'jam',
         },
       ]);
       await env.service.ask(backend, doc, 'label');
 
-      await env.service.answer(true, backend, doc);
+      final outcome = await env.service.answer(true, backend, doc);
 
+      expect(
+        outcome,
+        isA<InvokeSucceeded>(),
+        reason: 'required is satisfied by the server-supplied default',
+      );
       expect(env.sentBodies, ['text=jam']);
     });
 
-    test('a field with no checkbox and no default is left unfilled', () async {
-      // siren.dart's Field does not model "required" yet, so this port has
-      // no way to tell such a field apart from an optional one with no
-      // value -- both are simply omitted, never guessed at. Asking out loud
-      // for a value the server actually requires is n11's job.
-      final env = Env(
-        routes: {
-          'POST ${base}label': const Route(
-            body: {
-              'properties': {'state': 'done'},
-            },
-          ),
-        },
-      );
+    test(
+      'a field with no checkbox, no default, and not required is left unfilled',
+      () async {
+        final env = Env(
+          routes: {
+            'POST ${base}label': const Route(
+              body: {
+                'properties': {'state': 'done'},
+              },
+            ),
+          },
+        );
+        final doc = labelDoc([
+          {
+            'name': 'text',
+            'type': 'text',
+            'title': 'What should the jar say?',
+          },
+        ]);
+        await env.service.ask(backend, doc, 'label');
+
+        await env.service.answer(true, backend, doc);
+
+        expect(env.sentBodies, ['']);
+      },
+    );
+
+    test(
+      'a required field with no default and no checkbox is asked for out loud',
+      () async {
+        final env = Env(
+          routes: {
+            'POST ${base}label': const Route(
+              body: {
+                'properties': {'state': 'done'},
+              },
+            ),
+          },
+        );
+        final doc = labelDoc([
+          {
+            'name': 'text',
+            'type': 'text',
+            'required': true,
+            'title': 'What should the jar say?',
+          },
+        ]);
+        await env.service.ask(backend, doc, 'label');
+
+        final outcome = await env.service.answer(true, backend, doc);
+
+        expect(
+          env.requested,
+          isEmpty,
+          reason: 'nothing is sent while a value is missing',
+        );
+        expect(outcome, isA<InvokeNeedsValue>());
+        final needsValue = outcome as InvokeNeedsValue;
+        expect(needsValue.fieldName, 'text');
+        expect(
+          needsValue.label,
+          'What should the jar say?',
+          reason: 'the question uses the server\'s wording',
+        );
+
+        final answered = await env.service.answerValue('plum jam', backend, doc);
+
+        expect(
+          answered,
+          isA<InvokeSucceeded>(),
+          reason: 'what was said is what is sent',
+        );
+        expect(env.sentBodies, ['text=plum+jam']);
+      },
+    );
+
+    test('an empty spoken value sends nothing, and says so', () async {
+      final env = Env();
       final doc = labelDoc([
-        {'name': 'text', 'type': 'text', 'title': 'What should the jar say?'},
+        {'name': 'text', 'type': 'text', 'required': true},
       ]);
       await env.service.ask(backend, doc, 'label');
-
       await env.service.answer(true, backend, doc);
 
-      expect(env.sentBodies, ['']);
+      final outcome = await env.service.answerValue('', backend, doc);
+
+      expect(
+        env.requested,
+        isEmpty,
+        reason: 'an empty transcription sends nothing',
+      );
+      expect(outcome, isA<InvokeRefused>());
+      expect((outcome as InvokeRefused).reason, contains('Nothing was heard'));
+      expect(
+        env.service.hasPending,
+        isFalse,
+        reason: 'an unanswerable question is not left pending forever',
+      );
     });
+
+    test(
+      'more than one missing required field is refused, not dictated one at a time',
+      () async {
+        final env = Env();
+        final doc = labelDoc([
+          {'name': 'text', 'type': 'text', 'required': true},
+          {'name': 'colour', 'type': 'text', 'required': true},
+        ]);
+        await env.service.ask(backend, doc, 'label');
+
+        final outcome = await env.service.answer(true, backend, doc);
+
+        expect(
+          env.requested,
+          isEmpty,
+          reason: 'more than one missing value is refused, not dictated',
+        );
+        expect(outcome, isA<InvokeRefused>());
+        expect(
+          env.service.hasPending,
+          isFalse,
+          reason: 'a refused action does not stay pending',
+        );
+      },
+    );
+
+    test(
+      'answerValue with nothing awaiting a value sends nothing',
+      () async {
+        final env = Env();
+        final outcome = await env.service.answerValue(
+          'anything',
+          backend,
+          root(),
+        );
+
+        expect(outcome, isNull);
+        expect(env.requested, isEmpty);
+      },
+    );
   });
 
   group('confirmationText', () {

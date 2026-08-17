@@ -120,7 +120,26 @@ class Field {
   final dynamic value;
   final String? title;
 
-  const Field({required this.name, this.type, this.value, this.title});
+  /// Whether the server marked this field required. Siren has no own
+  /// concept of it; this is the same server extension property
+  /// `pebble/src/pkjs/actions.js` reads off `field.required` — a plain
+  /// boolean member on the field object, not a Siren-defined one. Absent or
+  /// anything other than JSON `true` means "not required", the same
+  /// tolerant-default rule every other optional member here follows.
+  ///
+  /// Nothing in this file *acts* on it — that would be policy, not a
+  /// document lookup, and belongs to `action_service.dart` (see its
+  /// `fillFields`), exactly as `siren.js` never inspects `field.value`
+  /// either.
+  final bool required;
+
+  const Field({
+    required this.name,
+    this.type,
+    this.value,
+    this.title,
+    this.required = false,
+  });
 
   factory Field.fromJson(dynamic json) {
     final map = _asMap(json);
@@ -129,6 +148,7 @@ class Field {
       type: _asNonEmptyString(map['type']),
       value: map['value'],
       title: _asNonEmptyString(map['title']),
+      required: map['required'] == true,
     );
   }
 

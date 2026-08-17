@@ -3,14 +3,22 @@
 ///
 /// This is the Dart port of the parts of `pebble/src/pkjs/actions.js` this
 /// task owns — see that file's header for the full reasoning, most of which
-/// carries over unchanged. Left to their own tasks, exactly as
-/// `flutter/AGENTS.md` section 4 maps them: the one retry the hypermedia
-/// contract allows on a `409` (`m11`), and asking out loud for a required
-/// field with no default (`n11`, the `pending.awaiting`/`spoken` branch of
-/// `actions.js`). Until `n11` lands, a field with neither a checkbox nor a
-/// server-supplied default is simply left unfilled — see [fieldValues] — the
-/// "or refused" half of `pebble/docs/DESIGN.md`'s "Do not invent a value",
-/// not the "asked for out loud" half.
+/// carries over unchanged. Left to its own task, exactly as
+/// `flutter/AGENTS.md` section 4 maps it: the one retry the hypermedia
+/// contract allows on a `409` (`m11`).
+///
+/// **Do not invent a value** (`pebble/docs/DESIGN.md`): a required field
+/// with no default and no confirmation to stand in for it is asked for out
+/// loud, or the action is refused — never guessed at. [fillFields] is where
+/// that decision is made: a checkbox fills itself from the confirmation
+/// already given, a field with a server-supplied default takes it as-is,
+/// and a required field with neither becomes [FieldValueMissing] (the first
+/// one) or [FieldsRefused] (a second one — dictating several fields one at a
+/// time is worse than saying plainly this cannot be done without asking).
+/// [ActionService.answerValue] is the reply to that question, mirroring
+/// `answerSpoken()` in actions.js. Only [Field.required] (`siren.dart`)
+/// makes any of this possible to tell apart from an optional field with no
+/// value — see that file for how the server signals it.
 ///
 /// **Ask before acting** (`pebble/docs/DESIGN.md`): anything whose method is
 /// not in [safeMethods] gets a confirmation before anything is sent.
@@ -93,14 +101,36 @@ sealed class InvokeOutcome {
   const InvokeOutcome();
 }
 
-/// Nothing was sent: the action named by a pending question is no longer
-/// offered on the document passed to [ActionService.answer] — it may have
-/// been withdrawn, or the document may have moved on since [ActionService.ask]
-/// was called. That is a real answer, not a bug to route around, mirroring
-/// `invoke()`'s re-check of `nav.top().entity` in actions.js.
+/// Nothing was sent, with [reason] explaining why — never a bug to route
+/// around by inventing a request. Three cases end up here, all mirrored
+/// from actions.js:
+///
+///  - the action named by a pending question is no longer offered on the
+///    document passed to [ActionService.answer] or [ActionService.answerValue]
+///    — it may have been withdrawn, or the document may have moved on since
+///    [ActionService.ask] was called (`invoke()`'s re-check of
+///    `nav.top().entity`);
+///  - more than one required field has no default and no confirmation to
+///    fill it — asking out loud for one is fine, dictating several one at a
+///    time is not (the `problem` branch of `fieldValues()`);
+///  - a value asked for out loud via [InvokeNeedsValue] came back empty
+///    (`answerSpoken()`'s "nothing was heard" case).
 class InvokeRefused extends InvokeOutcome {
   final String reason;
   const InvokeRefused(this.reason);
+}
+
+/// A required field on the pending action has no default and no
+/// confirmation to stand in for it (`pebble/docs/DESIGN.md`, "Do not invent
+/// a value"), so it must be asked for out loud rather than guessed at.
+/// [fieldName] identifies the field for the eventual
+/// [ActionService.answerValue] call; [label] is what to show on screen —
+/// the server's own wording ([Field.title]) when it gave one, else the
+/// field's name. Mirrors `invokeAskForValue()` in actions.js.
+class InvokeNeedsValue extends InvokeOutcome {
+  final String fieldName;
+  final String label;
+  const InvokeNeedsValue({required this.fieldName, required this.label});
 }
 
 /// The request was sent and the server answered without a transport
@@ -131,10 +161,34 @@ class _PendingAction {
     required this.name,
     required this.href,
     required this.method,
+    this.awaitingField,
   });
   final String name;
   final String href;
   final String method;
+
+  /// Set once a required field has been asked for out loud and the pending
+  /// question has changed from "yes/no" to "what value" — mirrors
+  /// `pending.awaiting` in actions.js. Null the rest of the time.
+  final String? awaitingField;
+
+  /// A copy with [awaitingField] set, once [fillFields] finds exactly one
+  /// field to ask for out loud.
+  _PendingAction awaiting(String fieldName) => _PendingAction(
+    name: name,
+    href: href,
+    method: method,
+    awaitingField: fieldName,
+  );
+}
+
+/// A value given for one field by voice/text, matched to it by name.
+/// Mirrors the `spoken` parameter threaded through `fieldValues()`/
+/// `invoke()` in actions.js.
+class FieldAnswer {
+  final String name;
+  final String text;
+  const FieldAnswer({required this.name, required this.text});
 }
 
 /// Fills an action's fields generically. Nothing here knows what any field
@@ -142,15 +196,21 @@ class _PendingAction {
 ///
 ///  - a checkbox carries the user's confirmation, because a required
 ///    checkbox *is* the confirmation this app already asked for;
+///  - a value matching [spoken]'s field name is what the user just said,
+///    asked for by [fillFields] on an earlier call;
 ///  - anything else takes the default the server declared in `value`.
 ///
-/// A field with neither — no checkbox, no default — is left out of the
-/// result rather than guessed at, because `siren.dart`'s [Field] does not
-/// yet model which fields the server marked required (that lands with the
-/// required-field prompt, `n11`) — there is nothing here to safely guess
-/// with. Mirrors `fieldValues()` in actions.js, minus the `spoken`/`missing`
-/// paths that task also owns.
-Map<String, String> fieldValues(Action action, {required bool confirmed}) {
+/// A required field with none of those is left out of the result here —
+/// this function only fills what it safely can. Deciding whether that
+/// omission means asking out loud or refusing the action is [fillFields]'s
+/// job, not this one, so a direct caller (see the `fieldValues` group in
+/// the test file) always gets a plain map back. Mirrors the field-filling
+/// loop in `fieldValues()` in actions.js.
+Map<String, String> fieldValues(
+  Action action, {
+  required bool confirmed,
+  FieldAnswer? spoken,
+}) {
   final values = <String, String>{};
   for (final field in action.fields) {
     if (field.name.isEmpty) {
@@ -158,6 +218,8 @@ Map<String, String> fieldValues(Action action, {required bool confirmed}) {
     }
     if (field.type == 'checkbox') {
       values[field.name] = confirmed ? 'true' : 'false';
+    } else if (spoken != null && spoken.name == field.name) {
+      values[field.name] = spoken.text;
     } else if (field.value != null) {
       values[field.name] = field.value.toString();
     }
@@ -165,17 +227,85 @@ Map<String, String> fieldValues(Action action, {required bool confirmed}) {
   return values;
 }
 
-/// What the user reads before confirming an unsafe action. A checkbox
-/// field's title is preferred over everything else, because that sentence
-/// is the server explaining the consequence — it is written for exactly
-/// this moment and nothing this app could add would improve it. Mirrors
-/// `confirmationText()` in actions.js; the original prefers a checkbox only
-/// when it is also marked required, a qualifier `siren.dart`'s [Field]
-/// cannot express yet (see [fieldValues]), so here any checkbox carrying a
-/// title is treated as the server's own confirmation wording.
+/// What [fillFields] decided: either every field got a value, or a required
+/// one didn't and filling stopped there. A caller `switch`es over this
+/// exhaustively, same as every other outcome type in this file.
+sealed class FieldFillOutcome {
+  const FieldFillOutcome();
+}
+
+/// Every field — required or not — has a value, [values] included.
+class FieldsFilled extends FieldFillOutcome {
+  final Map<String, String> values;
+  const FieldsFilled(this.values);
+}
+
+/// Exactly one required field has neither a checkbox nor a default nor a
+/// matching [FieldAnswer] — the one case this app can ask out loud for
+/// rather than refuse.
+class FieldValueMissing extends FieldFillOutcome {
+  final Field field;
+  const FieldValueMissing(this.field);
+}
+
+/// More than one required field is missing a value. Asking out loud for one
+/// field at a time is fine; dictating several is worse than plainly
+/// refusing, so the whole action is refused rather than asking for the
+/// first and silently dropping the rest.
+class FieldsRefused extends FieldFillOutcome {
+  final String reason;
+  const FieldsRefused(this.reason);
+}
+
+/// Decides whether [action]'s fields can all be sent as-is, whether exactly
+/// one required field needs asking for out loud, or whether the action must
+/// be refused outright (`pebble/docs/DESIGN.md`, "Do not invent a value").
+/// Built on top of [fieldValues] rather than duplicating its fill logic:
+/// this function only adds the question "is anything required still
+/// missing", scanning [Action.fields] once more against the map
+/// [fieldValues] already produced. Mirrors the `missing`/`problem` branches
+/// of `fieldValues()` in actions.js.
+FieldFillOutcome fillFields(
+  Action action, {
+  required bool confirmed,
+  FieldAnswer? spoken,
+}) {
+  final values = fieldValues(action, confirmed: confirmed, spoken: spoken);
+  Field? missing;
+  for (final field in action.fields) {
+    if (field.name.isEmpty ||
+        !field.required ||
+        values.containsKey(field.name)) {
+      continue;
+    }
+    if (missing == null) {
+      // Asked for by voice rather than refused -- but only the first one.
+      missing = field;
+    } else {
+      return const FieldsRefused(
+        'needs values for more than one field, which cannot be asked for '
+        'one at a time',
+      );
+    }
+  }
+  if (missing != null) {
+    return FieldValueMissing(missing);
+  }
+  return FieldsFilled(values);
+}
+
+/// What the user reads before confirming an unsafe action. A *required*
+/// checkbox's title is preferred over everything else, because that
+/// sentence is the server explaining the consequence — it is written for
+/// exactly this moment and nothing this app could add would improve it.
+/// Mirrors `confirmationText()` in actions.js: a checkbox that merely
+/// exists but isn't required does not stand in for the generic fallback
+/// sentence, the same distinction [fillFields] draws when deciding what is
+/// safe to send without asking.
 String confirmationText(Action action) {
   for (final field in action.fields) {
     if (field.type == 'checkbox' &&
+        field.required &&
         field.title != null &&
         field.title!.isNotEmpty) {
       return field.title!;
@@ -245,12 +375,17 @@ class ActionService {
 
   /// Handles the reply to a confirmation [ask] raised. Mirrors the confirmed
   /// half of `answer()` in actions.js — the `pending.awaiting`/`spoken` half,
-  /// for a value asked for out loud, is a separate task (`n11`) and has no
-  /// counterpart here yet.
+  /// for a value asked for out loud, is [answerValue] instead of a second
+  /// parameter here, so a caller's two questions ("yes/no" vs. "what
+  /// value") stay two distinct, statically-typed calls rather than one
+  /// dynamically-dispatched one.
   ///
   /// Returns null when nothing was sent: either [confirmed] is false, or the
   /// question had already been superseded (answered or cancelled) before
-  /// this call — both are "nothing to do", not an error.
+  /// this call — both are "nothing to do", not an error. May also return
+  /// [InvokeNeedsValue] — see [fillFields] — in which case nothing has been
+  /// sent yet and the question is still pending, now awaiting [answerValue]
+  /// instead.
   ///
   /// [entity] is the document currently on screen, looked up by name again
   /// rather than trusting whatever [Action] was found when [ask] was called
@@ -272,13 +407,42 @@ class ActionService {
     return _invoke(backend, entity, confirmed: true);
   }
 
-  /// Sends the pending action, if it is still offered on [entity]. Shared by
-  /// the safe-method branch of [ask] and by [answer] — mirrors `invoke()` in
+  /// Handles the reply to the "say a value" prompt [InvokeNeedsValue]
+  /// raised. Mirrors `answerSpoken()` in actions.js.
+  ///
+  /// An empty [text] is not an answer: "confirmed but nothing said" is
+  /// reported as [InvokeRefused] rather than sent as an empty string, the
+  /// same guard `answerSpoken()` has ("Nothing was heard, so nothing was
+  /// sent"). Returns null when there is no value currently being asked for
+  /// — the question was answered or cancelled already, or [ask]/[answer]
+  /// never raised [InvokeNeedsValue] in the first place — the same
+  /// "nothing to do" contract [answer] uses.
+  Future<InvokeOutcome?> answerValue(
+    String text,
+    Backend backend,
+    Entity entity,
+  ) async {
+    final pending = _pending;
+    if (pending == null || pending.awaitingField == null) {
+      return null;
+    }
+    if (text.isEmpty) {
+      _pending = null;
+      return const InvokeRefused('Nothing was heard, so nothing was sent.');
+    }
+    final spoken = FieldAnswer(name: pending.awaitingField!, text: text);
+    return _invoke(backend, entity, confirmed: true, spoken: spoken);
+  }
+
+  /// Sends the pending action, if it is still offered on [entity] and every
+  /// required field can be filled. Shared by the safe-method branch of
+  /// [ask], by [answer] and by [answerValue] — mirrors `invoke()` in
   /// actions.js.
   Future<InvokeOutcome> _invoke(
     Backend backend,
     Entity entity, {
     required bool confirmed,
+    FieldAnswer? spoken,
   }) async {
     final name = _pending!.name;
     final action = entity.actionByName(name);
@@ -287,16 +451,27 @@ class ActionService {
       return const InvokeRefused('not offered');
     }
 
-    final values = fieldValues(action, confirmed: confirmed);
-    final href = _pending!.href;
-    final method = _pending!.method;
-    _pending = null;
-
-    _log('invoking "$name" ($method)');
-    final result = await _http.request(backend, href, method, values);
-    return switch (result) {
-      Ok(value: final response) => InvokeSucceeded(response),
-      Err(failure: final failure) => InvokeFailed(failure),
-    };
+    final filled = fillFields(action, confirmed: confirmed, spoken: spoken);
+    switch (filled) {
+      case FieldsRefused(:final reason):
+        _pending = null;
+        return InvokeRefused(reason);
+      case FieldValueMissing(:final field):
+        // Keep the question pending -- now awaiting a value for this field
+        // rather than a yes/no -- instead of clearing it as every other
+        // branch does; see the module comment and answerValue.
+        _pending = _pending!.awaiting(field.name);
+        return InvokeNeedsValue(fieldName: field.name, label: field.label);
+      case FieldsFilled(:final values):
+        final href = _pending!.href;
+        final method = _pending!.method;
+        _pending = null;
+        _log('invoking "$name" ($method)');
+        final result = await _http.request(backend, href, method, values);
+        return switch (result) {
+          Ok(value: final response) => InvokeSucceeded(response),
+          Err(failure: final failure) => InvokeFailed(failure),
+        };
+    }
   }
 }
