@@ -16,11 +16,11 @@
 // (n11 -- now that siren.dart's Field models "required", fillFields can
 // tell a required field with no default apart from an optional one, and
 // ActionService.answerValue is the reply to the "say a value" prompt that
-// distinction drives).
-//
-// Deliberately NOT ported: testConfirmedActionRetriesOnce,
-// testRetryIsNotRepeated and testRetryExpiresAfterTheTTL (the bounded 409
-// retry -- its own task, m11).
+// distinction drives); and testConfirmedActionRetriesOnce,
+// testRetryIsNotRepeated and testRetryExpiresAfterTheTTL (m11 -- the
+// bounded 409 retry, in the "the bounded 409 retry" group below, using an
+// injected `now` the same way live_service_test.dart's FakeClock controls
+// time without a real minute passing).
 //
 // Added beyond test-actions.js: direct coverage of isSafeMethod/safeMethods
 // (test-actions.js only exercises the split indirectly, through
@@ -91,19 +91,42 @@ Entity root({List<Map<String, dynamic>>? actions}) => Entity.fromJson({
 });
 
 /// One canned reply for [Env]'s [MockClient], keyed by `METHOD URL`.
+///
+/// [advanceClockBy], when set, moves [Env.clock] forward by that much
+/// *while this route is being served* -- after the request is recorded but
+/// before the response is returned -- so a test can place the moment
+/// [ActionService._retryable] checks the confirmation's age on either side
+/// of [confirmationRetryTtl], the same way a slow server's response arriving
+/// late would. Used only by the bounded-retry group below; every other test
+/// leaves it null and the clock never moves.
 class Route {
-  const Route({this.status = 200, this.body = const {'properties': {}}});
+  const Route({
+    this.status = 200,
+    this.body = const {'properties': {}},
+    this.advanceClockBy,
+  });
   final int status;
   final Map<String, dynamic> body;
+  final Duration? advanceClockBy;
 }
 
 /// A fake backend recording every request it received, mirroring
 /// test-actions.js's `requested`/`sentBodies` globals plus its route table --
 /// as an [Env] object instead of module-level mutable state, since
 /// [ActionService] is a plain instance rather than a required module.
+///
+/// [sequences], when a key is present, serves successive [Route]s to
+/// successive requests for that key (the last one repeating once
+/// exhausted) -- mirrors test-actions.js's
+/// `testConfirmedActionRetriesOnce` reaching into `FakeXHR.prototype.send`
+/// to make a conflict's *retry* succeed, without this file needing the
+/// same kind of prototype patching.
 class Env {
-  Env({Map<String, Route> routes = const {}}) {
-    final table = {
+  Env({
+    Map<String, Route> routes = const {},
+    Map<String, List<Route>> sequences = const {},
+  }) {
+    this.routes = {
       'POST ${base}brew': const Route(
         body: {
           'properties': {'state': 'done', 'id': 7},
@@ -121,17 +144,21 @@ class Env {
       ),
       ...routes,
     };
+    this.sequences = Map.of(sequences);
     final client = MockClient((request) async {
       final key = '${request.method} ${request.url}';
       requested.add(key);
       sentBodies.add(request.body);
-      final route = table[key];
+      final route = _routeFor(key);
       if (route == null) {
         return http.Response(
           '{"properties":{"message":"no such thing here"}}',
           404,
           headers: {'content-type': 'application/json'},
         );
+      }
+      if (route.advanceClockBy != null) {
+        clock = clock.add(route.advanceClockBy!);
       }
       return http.Response(
         jsonEncode(route.body),
@@ -142,8 +169,32 @@ class Env {
     service = ActionService(
       http: HttpService(client: client, log: (_) {}),
       log: (_) {},
+      now: () => clock,
     );
   }
+
+  /// Picks [key]'s next [Route]: from [sequences] if one was given for it
+  /// (advancing [_sequenceCalls]'s count for that key, clamped to the last
+  /// entry once exhausted), otherwise the fixed entry in [routes].
+  Route? _routeFor(String key) {
+    final sequence = sequences[key];
+    if (sequence == null || sequence.isEmpty) {
+      return routes[key];
+    }
+    final index = _sequenceCalls.update(key, (v) => v + 1, ifAbsent: () => 0);
+    return sequence[index < sequence.length ? index : sequence.length - 1];
+  }
+
+  final Map<String, int> _sequenceCalls = {};
+  late final Map<String, Route> routes;
+  late final Map<String, List<Route>> sequences;
+
+  /// The time [ActionService]'s injected clock reports -- see [Route]'s
+  /// doc comment for how a route moves it forward. Never touched outside a
+  /// route's [Route.advanceClockBy], so an ordinary test's assertions about
+  /// elapsed time (there are none) stay meaningless by construction: only
+  /// the bounded-retry group below cares what this holds.
+  DateTime clock = DateTime.fromMillisecondsSinceEpoch(1700000000000);
 
   final List<String> requested = [];
   final List<String> sentBodies = [];
@@ -341,7 +392,9 @@ void main() {
           posts,
           1,
           reason:
-              'no required checkbox, so nothing to retry (m11 owns retrying)',
+              '"brew" has no required checkbox, so nothing was confirmed in '
+              'the sense the bounded retry covers -- see the "the bounded '
+              '409 retry" group below for when a retry does happen',
         );
         expect(outcome, isA<InvokeFailed>());
         expect((outcome as InvokeFailed).failure.kind, FailureKind.conflict);
@@ -434,11 +487,7 @@ void main() {
           },
         );
         final doc = labelDoc([
-          {
-            'name': 'text',
-            'type': 'text',
-            'title': 'What should the jar say?',
-          },
+          {'name': 'text', 'type': 'text', 'title': 'What should the jar say?'},
         ]);
         await env.service.ask(backend, doc, 'label');
 
@@ -486,7 +535,11 @@ void main() {
           reason: 'the question uses the server\'s wording',
         );
 
-        final answered = await env.service.answerValue('plum jam', backend, doc);
+        final answered = await env.service.answerValue(
+          'plum jam',
+          backend,
+          doc,
+        );
 
         expect(
           answered,
@@ -547,20 +600,17 @@ void main() {
       },
     );
 
-    test(
-      'answerValue with nothing awaiting a value sends nothing',
-      () async {
-        final env = Env();
-        final outcome = await env.service.answerValue(
-          'anything',
-          backend,
-          root(),
-        );
+    test('answerValue with nothing awaiting a value sends nothing', () async {
+      final env = Env();
+      final outcome = await env.service.answerValue(
+        'anything',
+        backend,
+        root(),
+      );
 
-        expect(outcome, isNull);
-        expect(env.requested, isEmpty);
-      },
-    );
+      expect(outcome, isNull);
+      expect(env.requested, isEmpty);
+    });
   });
 
   group('confirmationText', () {
@@ -591,6 +641,163 @@ void main() {
     test('an action with no fields fills nothing', () {
       final action = root().actionByName('brew')!;
       expect(fieldValues(action, confirmed: true), <String, String>{});
+    });
+  });
+
+  // --- the bounded 409 retry ------------------------------------------
+  //
+  // The one case where repeating a request is right: the user ticked a
+  // required checkbox, and the server judged the same request twice on
+  // budgets that changed in between. Mirrors test-actions.js's own
+  // "the bounded retry" section (testConfirmedActionRetriesOnce,
+  // testRetryIsNotRepeated, testRetryExpiresAfterTheTTL) -- "cool" is the
+  // fixture action with the required checkbox, same as
+  // testRequiredCheckboxFillsFromTheConfirmation above.
+  group('the bounded 409 retry', () {
+    test('a confirmed required checkbox is retried once, and the retry '
+        'succeeding is what is reported', () async {
+      final env = Env(
+        sequences: {
+          'POST ${base}cool': [
+            const Route(
+              status: 409,
+              body: {
+                'properties': {'message': 'needs confirmation'},
+              },
+            ),
+            const Route(
+              body: {
+                'properties': {'state': 'done'},
+              },
+            ),
+          ],
+        },
+      );
+      await env.service.ask(backend, root(), 'cool');
+
+      final outcome = await env.service.answer(true, backend, root());
+
+      final posts = env.requested.where((r) => r.startsWith('POST')).length;
+      expect(posts, 2, reason: 'a confirmed action is retried exactly once');
+      expect(env.sentBodies, [
+        'confirm=true',
+        'confirm=true',
+      ], reason: 'both attempts carried the confirmation');
+      expect(
+        outcome,
+        isA<InvokeSucceeded>(),
+        reason: 'the retry succeeding is what is reported',
+      );
+    });
+
+    test('a retry that also conflicts is not retried again', () async {
+      final env = Env(
+        routes: {
+          'POST ${base}cool': const Route(
+            status: 409,
+            body: {
+              'properties': {'message': 'still no'},
+            },
+          ),
+        },
+      );
+      await env.service.ask(backend, root(), 'cool');
+
+      final outcome = await env.service.answer(true, backend, root());
+
+      final posts = env.requested.where((r) => r.startsWith('POST')).length;
+      expect(
+        posts,
+        2,
+        reason: 'the retry itself is never retried, however it comes back',
+      );
+      expect(outcome, isA<InvokeFailed>());
+      expect((outcome as InvokeFailed).failure.kind, FailureKind.conflict);
+    });
+
+    test('a conflict that comes back after the confirmation is a minute old is '
+        'not retried', () async {
+      final env = Env(
+        routes: {
+          'POST ${base}cool': const Route(
+            status: 409,
+            body: {
+              'properties': {'message': 'needs confirmation'},
+            },
+            // The response itself is what carries the clock forward, so
+            // the confirmation is already stale by the time the 409 is
+            // in hand -- exactly the case the TTL exists to reject.
+            advanceClockBy: Duration(minutes: 1),
+          ),
+        },
+      );
+      await env.service.ask(backend, root(), 'cool');
+
+      final outcome = await env.service.answer(true, backend, root());
+
+      final posts = env.requested.where((r) => r.startsWith('POST')).length;
+      expect(
+        posts,
+        1,
+        reason: 'a confirmation older than the TTL is not spent on a retry',
+      );
+      expect(outcome, isA<InvokeFailed>());
+      expect((outcome as InvokeFailed).failure.kind, FailureKind.conflict);
+    });
+
+    test('a conflict that comes back just inside the confirmation TTL is still '
+        'retried once', () async {
+      final env = Env(
+        sequences: {
+          'POST ${base}cool': [
+            const Route(
+              status: 409,
+              body: {
+                'properties': {'message': 'needs confirmation'},
+              },
+              advanceClockBy: Duration(seconds: 59),
+            ),
+            const Route(
+              body: {
+                'properties': {'state': 'done'},
+              },
+            ),
+          ],
+        },
+      );
+      await env.service.ask(backend, root(), 'cool');
+
+      final outcome = await env.service.answer(true, backend, root());
+
+      final posts = env.requested.where((r) => r.startsWith('POST')).length;
+      expect(
+        posts,
+        2,
+        reason: 'a minute has not yet passed, so the retry is still taken',
+      );
+      expect(outcome, isA<InvokeSucceeded>());
+    });
+
+    test('an action with no required checkbox is never retried even on a '
+        'confirmed unsafe action', () async {
+      // "brew" has no checkbox at all: confirming it ticks nothing, so
+      // there is no confirmation for the retry exception to apply to.
+      final env = Env(
+        routes: {
+          'POST ${base}brew': const Route(
+            status: 409,
+            body: {
+              'properties': {'message': 'a brew is already running'},
+            },
+          ),
+        },
+      );
+      await env.service.ask(backend, root(), 'brew');
+
+      await env.service.answer(true, backend, root());
+
+      final posts = env.requested.where((r) => r.startsWith('POST')).length;
+      expect(posts, 1);
     });
   });
 }

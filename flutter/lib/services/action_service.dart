@@ -3,9 +3,23 @@
 ///
 /// This is the Dart port of the parts of `pebble/src/pkjs/actions.js` this
 /// task owns — see that file's header for the full reasoning, most of which
-/// carries over unchanged. Left to its own task, exactly as
-/// `flutter/AGENTS.md` section 4 maps it: the one retry the hypermedia
-/// contract allows on a `409` (`m11`).
+/// carries over unchanged.
+///
+/// **Never carry a document across an action** (`pebble/docs/DESIGN.md`,
+/// same section): sending a request is the last thing this service does
+/// with the document it was invoked from — [InvokeSucceeded] carries the
+/// raw [HttpResponse], never a parsed, ready-to-render [Entity], so nothing
+/// here can tempt a caller into showing the action's own response in place
+/// of re-fetching. The one exception the contract allows for a `409` is a
+/// required checkbox the user actually ticked, re-sent once, within a
+/// minute — implemented entirely inside [ActionService._invoke] (see
+/// `_ConfirmedRetry` and `ActionService._retryable`), so the
+/// retry never reaches a caller as a separate step: by the time
+/// [InvokeSucceeded] or [InvokeFailed] comes back, the one retry the
+/// contract allows has already happened, and that outcome is final. A `409`
+/// that is not eligible for it is reported the same as any other failure —
+/// re-fetching what it means is still the caller's decision (see below),
+/// but retrying the exact same request is never on the table again.
 ///
 /// **Do not invent a value** (`pebble/docs/DESIGN.md`): a required field
 /// with no default and no confirmation to stand in for it is asked for out
@@ -142,12 +156,15 @@ class InvokeSucceeded extends InvokeOutcome {
   const InvokeSucceeded(this.response);
 }
 
-/// The request failed — a `409` included. This port does not retry a
-/// conflict: that is the one bounded exception the contract allows, and it
-/// is its own task (`m11`). Every failure, conflict or otherwise, is
+/// The request failed — a `409` included. By the time this is returned,
+/// the one bounded retry the contract allows (a confirmed required
+/// checkbox, re-sent once, within a minute — see [ActionService._invoke])
+/// has already been taken if it applied, and this [failure] is what came
+/// back after that, not before it. Every failure, conflict or otherwise, is
 /// reported here the same way; deciding whether to re-fetch is left to the
 /// caller, exactly as `pebble/docs/DESIGN.md`'s "never carry a document
-/// across an action" describes.
+/// across an action" describes — a `409` here still means "go look", never
+/// "try again".
 class InvokeFailed extends InvokeOutcome {
   final Failure failure;
   const InvokeFailed(this.failure);
@@ -326,14 +343,29 @@ String confirmationText(Action action) {
 /// no coordinator wiring the two together exists yet — see the module
 /// comment.
 class ActionService {
-  ActionService({required HttpService http, void Function(String message)? log})
-    : _http = http,
-      _log = log ?? debugPrint;
+  ActionService({
+    required HttpService http,
+    void Function(String message)? log,
+    DateTime Function()? now,
+  }) : _http = http,
+       _log = log ?? debugPrint,
+       _now = now ?? DateTime.now;
 
   final HttpService _http;
   final void Function(String message) _log;
 
+  /// Injected the same way `live_service.dart`'s clock is (see
+  /// `test/services/live_service_test.dart`'s `FakeClock`), so a test can
+  /// place a confirmation's age exactly on either side of
+  /// [confirmationRetryTtl] without a real minute passing.
+  final DateTime Function() _now;
+
   _PendingAction? _pending;
+
+  /// A confirmation the user gave, kept just long enough to answer a server
+  /// that comes back `409` after it — see [_ConfirmedRetry] and
+  /// [_retryable].
+  _ConfirmedRetry? _confirmedRetry;
 
   /// Whether a question is currently awaiting an answer. Mirrors
   /// `hasPending()` in actions.js — a future idle-refresh timer needs to
@@ -347,6 +379,19 @@ class ActionService {
   /// does not outlive the document it was about.
   void cancelPending() {
     _pending = null;
+  }
+
+  /// The narrow question the contract permits: did the user confirm *this*
+  /// action, by ticking a required checkbox, within the last
+  /// [confirmationRetryTtl]? Anything else -- no confirmation remembered, a
+  /// confirmation for a different action, or one old enough to have
+  /// expired -- is a no. Mirrors `retryable()` in actions.js.
+  bool _retryable(String name) {
+    final retry = _confirmedRetry;
+    if (retry == null || retry.name != name) {
+      return false;
+    }
+    return _now().difference(retry.at) < confirmationRetryTtl;
   }
 
   /// Looks up [name] on [entity] and decides whether it needs confirming.
@@ -467,11 +512,114 @@ class ActionService {
         final method = _pending!.method;
         _pending = null;
         _log('invoking "$name" ($method)');
-        final result = await _http.request(backend, href, method, values);
-        return switch (result) {
+        if (confirmed && _hasRequiredCheckbox(action)) {
+          // Remembered for the one retry the contract allows -- see
+          // _ConfirmedRetry and _retryable. Unconditionally overwrites
+          // whatever was remembered before, mirroring `confirmedAt = ...`
+          // in actions.js: a fresh confirmation replaces a stale one rather
+          // than accumulating alongside it.
+          _confirmedRetry = _ConfirmedRetry(
+            name: name,
+            href: href,
+            method: method,
+            values: values,
+            at: _now(),
+          );
+        }
+        return _send(backend, href, method, values, name);
+    }
+  }
+
+  /// Sends the request. Mirrors `invokeSend()`'s call into `http.request()`
+  /// in actions.js; what happens to the answer is [_afterSend]'s job, split
+  /// out so this function stays the shape of a single request.
+  Future<InvokeOutcome> _send(
+    Backend backend,
+    String href,
+    String method,
+    Map<String, String> values,
+    String name,
+  ) async {
+    final result = await _http.request(backend, href, method, values);
+    return _afterSend(backend, href, method, values, name, result);
+  }
+
+  /// Turns a response into the outcome a caller sees, taking the contract's
+  /// one bounded retry first if it applies. Mirrors `afterAction()` and the
+  /// retry branch of `afterActionError()` in actions.js, collapsed into one
+  /// place here because the retry must never reach the caller as a visible,
+  /// separate step -- by the time this returns, whatever the contract
+  /// allowed has already happened, and the [InvokeOutcome] it returns is
+  /// final.
+  Future<InvokeOutcome> _afterSend(
+    Backend backend,
+    String href,
+    String method,
+    Map<String, String> values,
+    String name,
+    Result<HttpResponse> result,
+  ) async {
+    switch (result) {
+      case Ok(value: final response):
+        // The confirmation was spent, successfully -- see afterActionSuccess
+        // in actions.js clearing confirmedAt the same way.
+        _confirmedRetry = null;
+        return InvokeSucceeded(response);
+      case Err(failure: final failure):
+        if (failure.kind != FailureKind.conflict || !_retryable(name)) {
+          return InvokeFailed(failure);
+        }
+        // The one exception: a required checkbox the user actually ticked,
+        // re-sent once, within a minute. Cleared *before* sending the retry
+        // so whatever this second attempt returns -- success, the same
+        // conflict again, or anything else -- is final; retryable(name)
+        // will say no to a second attempt at the same action regardless of
+        // how much of the TTL is left.
+        _confirmedRetry = null;
+        _log('conflict on a confirmed action: re-sending it once');
+        final retried = await _http.request(backend, href, method, values);
+        return switch (retried) {
           Ok(value: final response) => InvokeSucceeded(response),
-          Err(failure: final failure) => InvokeFailed(failure),
+          Err(failure: final retryFailure) => InvokeFailed(retryFailure),
         };
     }
   }
+}
+
+/// Whether [action] has a required checkbox -- the one field type whose
+/// value *is* the user's confirmation (see [fieldValues]), and therefore the
+/// only case the bounded `409` retry applies to. A checkbox that exists but
+/// isn't required does not count, same distinction [confirmationText] draws.
+/// Mirrors `hasRequiredCheckbox()` in actions.js.
+bool _hasRequiredCheckbox(Action action) =>
+    action.fields.any((field) => field.type == 'checkbox' && field.required);
+
+/// How long a confirmation stays eligible for the one retry the contract
+/// allows. Mirrors `CONFIRMATION_TTL_MS` in actions.js.
+const Duration confirmationRetryTtl = Duration(minutes: 1);
+
+/// A confirmation the user gave, kept just long enough to answer a server
+/// that asks for it after the fact.
+///
+/// The contract allows this narrow case: an action whose required checkbox
+/// the user explicitly ticked can still come back `409`, because the server
+/// judges the request twice against budgets that can change in between.
+/// Re-sending the same confirmed field once is legitimate; synthesising a
+/// confirmation nobody gave is not, which is why this records only what was
+/// actually confirmed ([values], filled by [fillFields] with [_hasRequiredCheckbox]
+/// already true), and only briefly ([confirmationRetryTtl], checked by
+/// [ActionService._retryable]). Mirrors `confirmedAt` in actions.js.
+class _ConfirmedRetry {
+  const _ConfirmedRetry({
+    required this.name,
+    required this.href,
+    required this.method,
+    required this.values,
+    required this.at,
+  });
+  final String name;
+  final String href;
+  final String method;
+  final Map<String, String> values;
+  final DateTime at;
 }
