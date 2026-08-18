@@ -270,6 +270,13 @@ class Env {
       if (unreachable) {
         throw Exception('connection refused');
       }
+      // When a gate is registered for this request's `METHOD URL`, hold it
+      // here until the test completes the gate — the dispose-during-in-flight
+      // test (task 821) uses this to land an invoke GET on a disposed
+      // coordinator.
+      if (gates.containsKey(key)) {
+        await gates[key]!.future;
+      }
       final route = routes[key];
       if (route == null) {
         return http.Response(
@@ -343,6 +350,9 @@ class Env {
   };
 
   bool unreachable = false;
+
+  /// Per-request gates (keyed by `METHOD URL`); see the MockClient closure.
+  final Map<String, Completer<void>> gates = {};
   final List<String> requested = [];
   final List<String> sentBodies = [];
 
@@ -1006,6 +1016,42 @@ void main() {
         isNull,
         reason: 'a withdrawn action is a real answer, not a question',
       );
+    });
+  });
+  group('dispose during an in-flight action outcome (821)', () {
+    // A non-live action whose invoke GET is still in flight when the user
+    // backs away (so the coordinator is disposed) must not notifyListeners on
+    // a disposed ChangeNotifier. The peek action is safe (no confirm), so
+    // activate invokes it straight through; gating its GET holds the invoke
+    // in flight while the test disposes, then completing the gate lands the
+    // 200 -> _handleSuccess -> `await nav.refresh()` -> notifyListeners on a
+    // disposed session. Nav's post-await guard bails the refresh and the
+    // session's notifyListeners override is a no-op once disposed, so it
+    // completes without tripping the "used after dispose" assert.
+    test('a non-live action landing after dispose does not throw', () async {
+      final env = Env();
+      final rows = await env.openRoot();
+      // The default peek route returns 200 with no `state`, so the action
+      // does not start a live watch and _handleSuccess takes its
+      // `await nav.refresh()` branch. Gate the invoke GET so the test can
+      // hold it in flight, dispose, then let it land on the disposed session.
+      final peekGate = Completer<void>();
+      env.gates['GET ${base}peek'] = peekGate;
+
+      final activate = env.session.activate(rows['Look inside']!);
+      // Pump microtasks until activate reaches the gated peek GET (it
+      // suspends there; the gate is not completed yet).
+      for (var i = 0; i < 20; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      // The invoke GET is now held in flight; dispose the coordinator while
+      // it is (the user backed away).
+      env.session.dispose();
+      peekGate.complete();
+      await activate;
+      // Let the _handleSuccess async tail (await nav.refresh then
+      // notifyListeners) finish on the disposed coordinator.
+      await Future<void>.delayed(const Duration(milliseconds: 10));
     });
   });
 }

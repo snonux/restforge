@@ -148,6 +148,14 @@ class NavService extends ChangeNotifier {
   DocumentState _state = DocumentState.ok;
   Failure? _failure;
 
+  /// True once [dispose] has run. A fetch that is still in flight when the
+  /// service is disposed (the user backed out of [DocumentScreen] before the
+  /// root landed, or a [refresh] racing a pop) must not [notifyListeners] on a
+  /// disposed [ChangeNotifier] — see task 821. The post-await guards in
+  /// [openRoot]/[_fetch] bail the in-flight op cleanly, and this override makes
+  /// any straggler [notifyListeners] a no-op rather than a debug-assert throw.
+  bool _disposed = false;
+
   /// The backend currently open, or null before [openRoot] has ever been
   /// called. A live accessor rather than a value handed out once — mirrors
   /// `currentBackend` in `nav.js`, kept for the same reason: a future
@@ -214,6 +222,9 @@ class NavService extends ChangeNotifier {
     notifyListeners();
 
     final result = await _http.get(backend, backend.baseUrl);
+    if (_disposed) {
+      return;
+    }
     switch (result) {
       case Ok(value: final response):
         final entity = Entity.fromJson(response.entity);
@@ -358,6 +369,9 @@ class NavService extends ChangeNotifier {
     notifyListeners();
 
     final result = await _http.get(backend, href);
+    if (_disposed) {
+      return;
+    }
     switch (result) {
       case Ok(value: final response):
         final entity = Entity.fromJson(response.entity);
@@ -383,5 +397,22 @@ class NavService extends ChangeNotifier {
     _stack.add(_StackFrame(entity: entity, href: href, title: title));
     _state = DocumentState.ok;
     _failure = null;
+  }
+
+  /// A no-op once [dispose] has run, so an in-flight fetch that completes after
+  /// the service is disposed (the user backed away before it landed) cannot
+  /// trip [ChangeNotifier]'s "used after dispose" assert. See [_disposed].
+  @override
+  void notifyListeners() {
+    if (_disposed) {
+      return;
+    }
+    super.notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 }

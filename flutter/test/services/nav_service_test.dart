@@ -469,4 +469,40 @@ void main() {
       },
     );
   });
+
+  group('dispose during an in-flight fetch (821)', () {
+    // A fetch still in flight when the user backs away from the document (so
+    // the NavService is disposed) must not notifyListeners on a disposed
+    // ChangeNotifier — that trips its "used after dispose" assert in debug
+    // and mutates a discarded service in release. The post-await guard in
+    // openRoot/_fetch bails the in-flight op cleanly, and the notifyListeners
+    // override is the backstop. Without either, completing the fetch here
+    // would throw and fail the `await`.
+
+    test(
+      'an in-flight root fetch landing after dispose does not throw',
+      () async {
+        final env = Env();
+        env.gate = Completer<void>();
+        final open = env.nav.openRoot(backend);
+        // The root fetch is held at the gate; dispose while it is in flight
+        // (the user backed away before it landed).
+        env.nav.dispose();
+        env.gate!.complete();
+        // Completing the fetch continues openRoot on a disposed NavService;
+        // the guard returns before it can push/notify. No throw.
+        await open;
+      },
+    );
+
+    test('an in-flight refresh landing after dispose does not throw', () async {
+      final env = Env();
+      await env.nav.openRoot(backend);
+      env.gate = Completer<void>();
+      final refresh = env.nav.refresh();
+      env.nav.dispose();
+      env.gate!.complete();
+      await refresh;
+    });
+  });
 }

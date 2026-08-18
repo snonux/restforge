@@ -336,6 +336,14 @@ class SessionService extends ChangeNotifier {
   /// service this file did not create is not this file's to tear down.
   final bool _ownsNav;
 
+  /// True once [dispose] has run. A live poll or an action outcome that
+  /// completes after the user has backed away from the document (so the
+  /// coordinator is disposed) must not [notifyListeners] on a disposed
+  /// [ChangeNotifier] — see task 821. [notifyListeners] is overridden to a
+  /// no-op once this is set, so [_onLiveDone]/[_onLiveGiveUp]/[_handleSuccess]
+  /// (and any other async tail) cannot trip the "used after dispose" assert.
+  bool _disposed = false;
+
   DetailView? _detail;
   SessionQuestion? _question;
   SessionNotice? _notice;
@@ -755,8 +763,22 @@ class SessionService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// A no-op once [dispose] has run, so an async tail — a live poll's
+  /// [_onLiveDone]/[_onLiveGiveUp], or an action outcome's
+  /// [_handleSuccess]/[_handleFailure], whose `await` completed after the
+  /// coordinator was disposed — cannot trip [ChangeNotifier]'s "used after
+  /// dispose" assert. See [_disposed].
+  @override
+  void notifyListeners() {
+    if (_disposed) {
+      return;
+    }
+    super.notifyListeners();
+  }
+
   @override
   void dispose() {
+    _disposed = true;
     _nav.removeListener(notifyListeners);
     _clock.dispose();
     _live.stop();
