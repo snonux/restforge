@@ -101,6 +101,20 @@ class _ConfirmationSheetHostState extends State<ConfirmationSheetHost> {
   void initState() {
     super.initState();
     widget.session.addListener(_onSessionChanged);
+    // A question may already be pending when this host mounts: running an
+    // action shortcut (home_screen's _runShortcut -> SessionService.runQuick)
+    // sets session.question *before* DocumentScreen is pushed, so by the
+    // time this host attaches its listener the notifyListeners has already
+    // come and gone. The listener only fires on *changes*, so check the
+    // initial state once the first frame is up — otherwise the user gets the
+    // holder document with no confirmation sheet, the sheet a hand-walked
+    // action would have got.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _onSessionChanged();
+    });
   }
 
   @override

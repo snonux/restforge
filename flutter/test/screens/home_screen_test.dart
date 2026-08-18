@@ -376,6 +376,79 @@ void main() {
       },
     );
 
+    testWidgets(
+      'running an ACTION shortcut re-fetches the holder and asks for '
+      'confirmation, exactly as if walked to by hand',
+      (tester) async {
+        // Regression: an action shortcut's confirmation used to never appear,
+        // because runQuick sets session.question *before* DocumentScreen is
+        // pushed, and ConfirmationSheetHost only reacted to *changes* on its
+        // listener -- not the question already pending when it mounted. The
+        // user got the holder document ("the overview") with no sheet.
+        await settings.saveBackends([
+          const Backend(name: 'bench', baseUrl: base, secret: 'k'),
+        ]);
+        final quick = QuickService(settings: settings);
+        // An action shortcut: the name + the holder document's address, never
+        // the action's own href (see quick_service.dart's module comment).
+        await quick.add(
+          const QuickItem(
+            label: 'Sweep the floor',
+            baseUrl: base,
+            kind: QuickKind.action,
+            holder: base,
+            name: 'sweep',
+          ),
+        );
+
+        final client = MockClient((request) async {
+          // runQuick fetches the holder (the root), then looks the action up
+          // on that entity in-process -- no second HTTP call for the lookup.
+          expect(request.method, 'GET');
+          expect(request.url.toString(), base);
+          return http.Response(
+            jsonEncode({
+              'class': ['workshop'],
+              'title': 'The workshop',
+              'properties': {'status': 'idle'},
+              'actions': [
+                {
+                  'name': 'sweep',
+                  'title': 'Sweep the floor',
+                  'method': 'POST',
+                  'href': '/sweep',
+                  'fields': [],
+                },
+              ],
+            }),
+            200,
+            headers: const {'content-type': 'application/json'},
+          );
+        });
+        final httpService = HttpService(client: client, log: (_) {});
+
+        await pumpHomeWith(tester, quick: quick, http: httpService);
+
+        await tester.tap(find.text('Sweep the floor'));
+        await tester.pumpAndSettle();
+
+        // The holder document is on screen (the overview the shortcut was
+        // saved from)...
+        expect(find.byType(DocumentScreen), findsOneWidget);
+        // ...AND, critically, the confirmation sheet for the unsafe POST is
+        // showing on top of it -- the sheet a hand-walked action would get.
+        expect(find.text('Confirm'), findsOneWidget);
+        expect(find.textContaining('POST to this server'), findsOneWidget);
+
+        // Pop the sheet + the document so the session is disposed (the
+        // idle-refresh timer would otherwise leak past the test).
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(BackButton));
+        await tester.pumpAndSettle();
+      },
+    );
+
     testWidgets('the delete button removes a shortcut and reports it', (
       tester,
     ) async {

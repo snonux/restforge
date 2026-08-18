@@ -64,6 +64,17 @@ class _DetailViewHostState extends State<DetailViewHost> {
   void initState() {
     super.initState();
     widget.session.addListener(_onSessionChanged);
+    // Same reason as _ConfirmationSheetHostState: a detail may already be
+    // pending when this host mounts (set before DocumentScreen was pushed),
+    // and the listener only fires on *changes*. No current caller sets a
+    // detail pre-mount, but the guard keeps this host honest if one ever
+    // does, mirroring the confirmation host exactly.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _onSessionChanged();
+    });
   }
 
   @override
