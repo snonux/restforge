@@ -141,32 +141,14 @@ class _HomeScreenState extends State<HomeScreen> {
     _reloadBackends();
   }
 
-  /// Opens [backend] at its root for browsing — the now-wired counterpart to
-  /// this screen's original skeleton behaviour of sending a backend tap to
-  /// the editor because there was nowhere else to send it (see the module
-  /// comment). Builds a fresh [SessionService] for the visit — this screen
-  /// keeps none around between visits, the same shape as [_runShortcut] —
-  /// starts the root fetch without awaiting it so [DocumentScreen] mounts
-  /// straight into the loading state rather than the home screen freezing
-  /// on a slow network, and pushes it. Whatever the fetch lands as — the
-  /// document, a failure, an unreachable — is [DocumentScreen]'s to render,
-  /// which is exactly the set of states it was written for. On return the
-  /// shortcut list is re-read (a shortcut may have been saved during the
-  /// visit, as with [_runShortcut]) and the session is disposed.
-  Future<void> _openBackend(Backend backend) async {
-    final session = SessionService(
-      http: widget.httpService ?? HttpService(),
-      quick: _quick,
-    );
-    unawaited(session.openBackend(backend));
-    // Defensive: there is no `await` between the unawaited call above and
-    // this check, so `mounted` cannot be false here yet — but the guard
-    // matches _runShortcut's shape and stays correct if a future change
-    // inserts an await before the push.
-    if (!mounted) {
-      session.dispose();
-      return;
-    }
+  /// The shared session-visit tail used by [_openBackend] and [_runShortcut]:
+  /// push `DocumentScreen` for [session], re-read the shortcut list on return
+  /// (a shortcut may have been saved during the visit — both callers reach a
+  /// document screen whose rows can be long-pressed to save one), then dispose
+  /// the session. One responsibility expressed once; each caller does its own
+  /// setup (build + start the session, handle a backend-missing shortcut),
+  /// then hands the session here.
+  Future<void> _visit(SessionService session) async {
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => DocumentScreen(session: session)),
@@ -175,6 +157,33 @@ class _HomeScreenState extends State<HomeScreen> {
       _reloadQuick();
     }
     session.dispose();
+  }
+
+  /// Opens [backend] at its root for browsing — the now-wired counterpart to
+  /// this screen's original skeleton behaviour of sending a backend tap to
+  /// the editor because there was nowhere else to send it (see the module
+  /// comment). Builds a fresh [SessionService] for the visit — this screen
+  /// keeps none around between visits, the same shape as [_runShortcut] —
+  /// starts the root fetch without awaiting it so [DocumentScreen] mounts
+  /// straight into the loading state rather than the home screen freezing
+  /// on a slow network, then hands the session to [_visit]. Whatever the
+  /// fetch lands as — the document, a failure, an unreachable — is
+  /// [DocumentScreen]'s to render, which is exactly the set of states it was
+  /// written for.
+  Future<void> _openBackend(Backend backend) async {
+    final session = SessionService(
+      http: widget.httpService ?? HttpService(),
+      quick: _quick,
+    );
+    unawaited(session.openBackend(backend));
+    // Defensive: there is no `await` between the unawaited call above and
+    // this check, so `mounted` cannot be false here yet — but the guard
+    // stays correct if a future change inserts an await before the visit.
+    if (!mounted) {
+      session.dispose();
+      return;
+    }
+    await _visit(session);
   }
 
   /// Drops a saved shortcut and reports it — never silent, per
@@ -196,11 +205,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Runs a saved shortcut: builds a fresh [SessionService] (this screen
   /// keeps none around between visits — see the module comment), hands it
-  /// to [SessionService.runQuick], and pushes `DocumentScreen` with it only
-  /// once a backend was actually resolved. On
-  /// [QuickRunOutcome.backendMissing] nothing is pushed — the shortcut
-  /// points at a backend that no longer exists, reported here rather than
-  /// navigating into a document that was never fetched.
+  /// to [SessionService.runQuick], and visits it via [_visit] only once a
+  /// backend was actually resolved. On [QuickRunOutcome.backendMissing]
+  /// nothing is pushed — the shortcut points at a backend that no longer
+  /// exists, reported here rather than navigating into a document that was
+  /// never fetched.
   Future<void> _runShortcut(QuickItem item) async {
     final messenger = ScaffoldMessenger.of(context);
     final session = SessionService(
@@ -224,21 +233,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       return;
     }
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => DocumentScreen(session: session)),
-    );
-    if (mounted) {
-      // The document screen this pushed is itself a place shortcuts can be
-      // saved from (its rows' long-press affordance), so the list may have
-      // grown while it was open. Re-read it, exactly as `_openEditor` does
-      // on its return — without this a shortcut saved during the visit
-      // would be silently absent from the opening screen until something
-      // else happened to reload it, the kind of silent drop this task says
-      // never to let happen.
-      _reloadQuick();
-    }
-    session.dispose();
+    await _visit(session);
   }
 
   @override
