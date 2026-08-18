@@ -708,8 +708,9 @@ void main() {
       expect(env.session.isLive, isTrue);
       final notice = env.session.notice as ActionOutcomeReported;
       // The fixture's job body already carries a "state", which
-      // _resultBanner prefers over the 202-derived "Accepted" fallback --
-      // the server's own word beats a generic one whenever it gave one.
+      // LiveService.resultText prefers over the 202-derived "Accepted"
+      // fallback -- the server's own word beats a generic one whenever it
+      // gave one.
       expect(notice.message, 'running');
     });
 

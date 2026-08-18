@@ -678,7 +678,7 @@ class SessionService extends ChangeNotifier {
     final resultEntity = Entity.fromJson(response.entity);
     _notice = ActionOutcomeReported(
       _pendingActionLabel,
-      message: _resultBanner(resultEntity, response.status),
+      message: LiveService.resultText(resultEntity, response.status),
       body: _describeResult(resultEntity, response.status),
     );
 
@@ -720,26 +720,26 @@ class SessionService extends ChangeNotifier {
   }
 
   /// A step reported while still watching. Mirrors `liveHandlers.onProgress`
-  /// in actions.js: the server's own wording for the step, falling back to
-  /// its `state` when it did not send one.
+  /// in actions.js. The text comes from [LiveService.progressText], which owns
+  /// the `step`/`state` property names — this coordinator just sets the
+  /// notice kind + string, so a property-name change on the server drifts
+  /// against the watch logic in one place, not two.
   void _onLiveProgress(String label, Entity entity) {
-    final step = entity.properties['step'];
-    final text = (step is String && step.isNotEmpty)
-        ? step
-        : '${entity.properties['state']}';
-    _notice = ActionProgress(label, text);
+    _notice = ActionProgress(label, LiveService.progressText(entity));
     notifyListeners();
   }
 
   /// The job stopped. Mirrors `liveHandlers.onDone`: the document it acted
-  /// on is worth re-reading now, because that is where the effect shows.
+  /// on is worth re-reading now, because that is where the effect shows. The
+  /// message comes from [LiveService.doneText] and the body from
+  /// `render_service.describe` — both owned by the live/render layers (this
+  /// coordinator just sets the notice), so neither the job-state vocabulary
+  /// nor the property rendering lives here.
   Future<void> _onLiveDone(String label, Entity entity) async {
-    final state = entity.properties['state'];
-    final message = (state is String && state.isNotEmpty) ? state : 'Done';
     _notice = ActionOutcomeReported(
       label,
-      message: message,
-      body: _describeEntity(entity),
+      message: LiveService.doneText(entity),
+      body: render.describe(entity),
     );
     await _nav.refresh();
     notifyListeners();
@@ -777,32 +777,15 @@ class SessionService extends ChangeNotifier {
       _clock.setInForeground(inForeground);
 }
 
-/// The server's own word for what an action produced: its `state` property,
-/// or "Accepted"/"Done" when it did not send one — the same fallback
-/// `resultBanner()` uses in actions.js, since a `202` and a `200` otherwise
-/// mean different things worth saying even when the body is silent about it.
-String _resultBanner(Entity entity, int status) {
-  final state = entity.properties['state'];
-  if (state is String && state.isNotEmpty) {
-    return state;
-  }
-  return status == 202 ? 'Accepted' : 'Done';
-}
-
-/// Renders every property of [entity] generically, so a value the server put
-/// in the response — a job id, an explanation — is never thrown away.
-/// Mirrors `describeEntity()` in actions.js.
-String _describeEntity(Entity entity) {
-  final parts = <String>[];
-  entity.properties.forEach((key, value) {
-    parts.add('$key: ${render.text(value)}');
-  });
-  return parts.join('   ');
-}
-
-/// [_describeEntity], falling back to the bare status when the response
-/// carried no properties at all. Mirrors `describeResult()` in actions.js.
+/// The body of an action-outcome notice: the response's properties, rendered
+/// generically through `render_service.describe` so nothing the server sent
+/// is thrown away, falling back to the bare status when the response carried
+/// no properties at all. The property rendering lives in `render_service.dart`
+/// (rendering is that module's job, not a coordinator's —
+/// `pebble/docs/DESIGN.md`, "Rendering does not interpret"); the status
+/// fallback is this file's because it is the action-response context only
+/// the coordinator holds. Mirrors `describeResult()` in `actions.js`.
 String _describeResult(Entity entity, int status) {
-  final described = _describeEntity(entity);
+  final described = render.describe(entity);
   return described.isNotEmpty ? described : 'HTTP $status';
 }

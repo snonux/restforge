@@ -201,6 +201,48 @@ class LiveService {
   /// `judgeable`.
   static bool _judgeable(Entity entity) => entity.properties.containsKey('state');
 
+  /// The `state` property as a string, or null when it is absent or not a
+  /// string — the one place that names the `state` property, so a rename on
+  /// the server changes one constant, not a grep across callers. This file
+  /// owns the job-state vocabulary (`stateRunning`, `stateNone`); the message
+  /// text helpers below ([progressText], [doneText], [resultText]) build on
+  /// it, so a property-name change does not silently drift between the
+  /// watch logic and what a notice says.
+  static String? stateText(Entity entity) {
+    final state = entity.properties['state'];
+    return state is String ? state : null;
+  }
+
+  /// The text for a "still running" notice: the server's `step`, or its
+  /// `state` when it did not send one. Mirrors the progress-text in
+  /// `actions.js`'s `liveHandlers.onProgress`.
+  static String progressText(Entity entity) {
+    final step = entity.properties['step'];
+    if (step is String && step.isNotEmpty) {
+      return step;
+    }
+    return '${entity.properties['state']}';
+  }
+
+  /// The text for a "done" notice: the server's `state`, or `"Done"` when
+  /// it did not send one. Mirrors `actions.js`'s `onDone`.
+  static String doneText(Entity entity) {
+    final state = stateText(entity);
+    return (state != null && state.isNotEmpty) ? state : 'Done';
+  }
+
+  /// The text for an action's own response banner: the server's `state`, or
+  /// `"Accepted"` (a 202 — the request was accepted, a job started) /
+  /// `"Done"` when it did not send one. Mirrors `resultBanner` in
+  /// `actions.js`.
+  static String resultText(Entity entity, int status) {
+    final state = stateText(entity);
+    if (state != null && state.isNotEmpty) {
+      return state;
+    }
+    return status == 202 ? 'Accepted' : 'Done';
+  }
+
   /// The server's own staleness budget, with [budgetBuffer] slack added, or
   /// null when the entity carried none. Mirrors `budgetMs`.
   static Duration? _budgetFor(Entity entity) {

@@ -143,6 +143,24 @@ String text(dynamic value) {
   return value.toString();
 }
 
+/// A one-line, generic summary of every property on [entity] — `key: value`
+/// pairs joined with wide spaces, each value through [text] so a number, a
+/// list or a nested object renders the same way it does in the document
+/// itself. This is the body of an action-outcome notice (the message is the
+/// server's `state`; this is the rest of what it sent), kept here rather than
+/// in `session.dart` because rendering is this module's job, not a
+/// coordinator's (`pebble/docs/DESIGN.md`, "Rendering does not interpret") —
+/// and because `session.dart` used to have a second, bespoke property-dump
+/// format for this, which is the kind of duplication that drifts. Mirrors
+/// `describeEntity()` in `actions.js`.
+String describe(Entity entity) {
+  final parts = <String>[];
+  entity.properties.forEach((key, value) {
+    parts.add('$key: ${text(value)}');
+  });
+  return parts.join('   ');
+}
+
 List<Row> _propertyRows(Entity entity) {
   final rows = <Row>[];
   entity.properties.forEach((key, value) {
