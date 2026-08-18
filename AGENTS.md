@@ -61,11 +61,54 @@ language. The full statement of each, with the reasoning, is in
   commit, a command line (where `ps` can read it) or a log. A key belongs in a
   file outside the repo, mode 0600, pasted into the app's settings.
 
+## Versioning
+
+One product, one version number, even though the two apps share no code, no
+store and no release process. `flutter/pubspec.yaml`'s `version:` field and
+`pebble/package.json`'s `version` field must always carry the same semantic
+version, and a release gets exactly **one** git tag — never one per
+subproject.
+
+- `just version` — prints both apps' current version and fails loudly if
+  their semver portions have drifted apart.
+- `just bump-version x.y.z` — sets both files to `x.y.z` in one step. Flutter
+  additionally carries a `+N` build-number suffix (Android's `versionCode`,
+  which the Play Store requires to strictly increase on every upload); the
+  recipe increments that `N` by 1 on every bump. It is unrelated to semver
+  and Pebble has no equivalent, since the watchapp is not distributed through
+  a store.
+
+To cut a release:
+
+```sh
+just bump-version 0.7.0          # edits both version files
+just version                     # confirms they now agree
+just check && just test          # both apps still pass
+git add flutter/pubspec.yaml pebble/package.json
+git commit -m "Bump version to 0.7.0"
+git tag v0.7.0                   # exactly one tag, at the repo root, not per app
+git push && git push --tags
+```
+
+Both files change in the **same commit**, and the tag is created **once**,
+after that commit, at the repo root — not inside `pebble/` or `flutter/`. A
+tag named after only one subproject (`pebble-v0.7.0`, or a tag pushed twice
+with two different messages) means the two apps have been allowed to version
+independently again, which is the exact thing this section exists to
+prevent.
+
+Semantic versioning: increment `z` (patch) for fixes and small changes,
+`y` (minor) and reset `z` for new features, and `x` (major) only when
+explicitly asked for one — the same rule the `increment-version-and-push`
+skill uses elsewhere; the difference here is that "the project" means both
+subprojects together, and `bump-version` is the mechanism that keeps them
+together.
+
 ## Commit policy
 
 Per-app commit rules are in each app's own AGENTS.md. Repo-wide: never commit
 anything holding an API key. `just check-secrets` scans the whole working tree,
 tracked or not, and is the enforcement.
 
-Last updated: August 17, 2026
+Last updated: August 18, 2026
 Maintained for: RESTForge agents

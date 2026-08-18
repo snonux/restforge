@@ -167,7 +167,10 @@ Never commit:
 - `pebble: command not found`: restore PATH from section 2.
 - Emulator does not start: run `just kill` then `just dev`.
 - Build fails: run `just clean` then `just rebuild`.
-- Change app version: update `package.json`, then run `just dev`.
+- Change app version: do not edit `package.json`'s `version` by hand — that
+  desyncs it from the Flutter app's version. Run `just bump-version x.y.z` at
+  the repo root (see the root `AGENTS.md`'s "Versioning" section), then
+  `just dev` here to pick it up.
 - `Waiting for the firmware to boot` forever: reset the emulator flash as
   described in the Justfile (`just reset-flash` / `just reset-flash-emery`).
   This is usually caused by two qemu processes sharing one flash image, so
@@ -186,5 +189,5 @@ Never commit:
   entered with `adb shell input text` come out corrupted. Verify the stored
   value by hash, never by eye — SIDELOADING.md has the procedure.
 
-Last updated: August 16, 2026
+Last updated: August 18, 2026
 Maintained for: RESTForge agents

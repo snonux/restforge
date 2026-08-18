@@ -323,6 +323,10 @@ reproducible dependency set is worth more than automatic minor upgrades.
 - The app says `unauthorized` against a server you know the key works on:
   suspect the key that was *typed*, not the key itself. Verify the stored value
   by hash, never by eye.
+- Change app version: do not edit `pubspec.yaml`'s `version:` by hand — that
+  desyncs it from the Pebble app's version. Run `just bump-version x.y.z` at
+  the repo root (see the root `AGENTS.md`'s "Versioning" section), then
+  `just pub-get` here to pick it up.
 
-Last updated: August 17, 2026
+Last updated: August 18, 2026
 Maintained for: RESTForge agents
