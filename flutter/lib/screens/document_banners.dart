@@ -138,6 +138,14 @@ class _NoticeBanner extends StatelessWidget {
 /// Not dismissible — dismissing "something is still happening" would be a
 /// lie, since the job keeps running underneath regardless of whether this
 /// banner is on screen.
+///
+/// Coloured with [_infoContainer]/[_onInfoContainer] (slightly blue) rather
+/// than a theme container — see i21: `secondaryContainer` inherits whatever
+/// hue the app's `ColorScheme.fromSeed` happens to use (deepOrange, in
+/// `main.dart`), which made "still running" read as the same beige/orange as
+/// the old "done" colouring below. A fixed, brightness-aware tone keeps this
+/// neutral state visually distinct from both success (green) and error (red)
+/// regardless of the app's seed colour.
 Widget _watchingBanner(BuildContext context, SessionNotice? notice) {
   final theme = Theme.of(context);
   final text = switch (notice) {
@@ -148,8 +156,8 @@ Widget _watchingBanner(BuildContext context, SessionNotice? notice) {
   return _Banner(
     bannerKey: const Key('live-watching-banner'),
     spinner: true,
-    background: theme.colorScheme.secondaryContainer,
-    foreground: theme.colorScheme.onSecondaryContainer,
+    background: _infoContainer(theme.brightness),
+    foreground: _onInfoContainer(theme.brightness),
     text: text,
   );
 }
@@ -165,6 +173,16 @@ Widget _watchingBanner(BuildContext context, SessionNotice? notice) {
 /// states themselves. Every case is dismissible via
 /// [SessionService.dismissNotice] — unlike [_watchingBanner], each of these
 /// is a finished fact, not something still changing underneath the banner.
+///
+/// Colouring (i21): "done" is [_successContainer] (slightly green) —
+/// previously `colorScheme.primaryContainer`, which rendered as beige/orange
+/// because the app's theme is seeded from `Colors.deepOrange` in
+/// `main.dart`. Every neutral/non-error case (gave up, withdrawn, the
+/// unreachable-in-practice progress fallback) uses [_infoContainer]
+/// (slightly blue, same as [_watchingBanner]) instead of
+/// `surfaceContainerHighest`, which inherits a faint tint of that same
+/// orange seed. Only the two actual error cases — failed and refused — keep
+/// `colorScheme.errorContainer` (red), per i21's "red only for real errors".
 Widget _outcomeBanner(
   BuildContext context,
   SessionNotice notice,
@@ -175,16 +193,16 @@ Widget _outcomeBanner(
     ActionOutcomeReported(:final message, :final body) => _Banner(
       bannerKey: const Key('live-done-banner'),
       icon: Icons.check_circle_outline,
-      background: theme.colorScheme.primaryContainer,
-      foreground: theme.colorScheme.onPrimaryContainer,
+      background: _successContainer(theme.brightness),
+      foreground: _onSuccessContainer(theme.brightness),
       text: '$message: $body',
       onDismiss: onDismiss,
     ),
     ActionGaveUp(:final heading) => _Banner(
       bannerKey: const Key('live-giveup-banner'),
       icon: Icons.hourglass_disabled,
-      background: theme.colorScheme.surfaceContainerHighest,
-      foreground: theme.colorScheme.onSurfaceVariant,
+      background: _infoContainer(theme.brightness),
+      foreground: _onInfoContainer(theme.brightness),
       text: 'Gave up waiting for "$heading" to finish',
       onDismiss: onDismiss,
     ),
@@ -207,8 +225,8 @@ Widget _outcomeBanner(
     ActionWithdrawn(:final heading) => _Banner(
       bannerKey: const Key('notice-withdrawn-banner'),
       icon: Icons.block,
-      background: theme.colorScheme.surfaceContainerHighest,
-      foreground: theme.colorScheme.onSurfaceVariant,
+      background: _infoContainer(theme.brightness),
+      foreground: _onInfoContainer(theme.brightness),
       text: '"$heading" is no longer offered',
       onDismiss: onDismiss,
     ),
@@ -220,13 +238,40 @@ Widget _outcomeBanner(
     ActionProgress(:final step) => _Banner(
       bannerKey: const Key('notice-progress-banner'),
       icon: Icons.timelapse,
-      background: theme.colorScheme.surfaceContainerHighest,
-      foreground: theme.colorScheme.onSurfaceVariant,
+      background: _infoContainer(theme.brightness),
+      foreground: _onInfoContainer(theme.brightness),
       text: step,
       onDismiss: onDismiss,
     ),
   };
 }
+
+/// Slightly green background for a successful/neutral-good outcome (i21).
+/// Deliberately a fixed, brightness-aware tone rather than
+/// `colorScheme.primaryContainer` or any other theme container: this app's
+/// `ColorScheme.fromSeed` is seeded from `Colors.deepOrange` (`main.dart`),
+/// so every theme container carries a warm cast — fine for buttons and rows,
+/// but it made the "done" banner read as beige/orange instead of success.
+/// Paired with [_onSuccessContainer] for the icon/text drawn on top.
+Color _successContainer(Brightness brightness) =>
+    brightness == Brightness.dark ? Colors.green.shade900 : Colors.green.shade100;
+
+/// Foreground paired with [_successContainer].
+Color _onSuccessContainer(Brightness brightness) =>
+    brightness == Brightness.dark ? Colors.green.shade100 : Colors.green.shade900;
+
+/// Slightly blue background for a neutral/in-progress outcome (i21): "still
+/// running", "gave up waiting", "no longer offered", and the
+/// unreachable-in-practice bare-progress fallback. Same rationale as
+/// [_successContainer] — a fixed tone so these never inherit the app theme's
+/// orange seed, and stay visually distinct from both the green success
+/// banner and the red `errorContainer` used for actual errors.
+Color _infoContainer(Brightness brightness) =>
+    brightness == Brightness.dark ? Colors.blue.shade900 : Colors.blue.shade100;
+
+/// Foreground paired with [_infoContainer].
+Color _onInfoContainer(Brightness brightness) =>
+    brightness == Brightness.dark ? Colors.blue.shade100 : Colors.blue.shade900;
 
 /// The single-row, coloured-strip shape [_watchingBanner] and
 /// [_outcomeBanner] both render, so the two only differ in the values they
