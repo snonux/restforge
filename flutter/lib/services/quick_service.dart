@@ -273,8 +273,10 @@ class QuickService {
   /// Appends a shortcut, replacing any identical one rather than
   /// accumulating duplicates — saving the same row twice is a natural thing
   /// to do and should be idempotent. Returns null, refusing to save, when
-  /// [item] is incomplete ([_usable]) or the list is already at [maxQuick].
-  /// Mirrors `add()` in `quick.js`.
+  /// [item] is incomplete ([_usable]), the list is already at [maxQuick],
+  /// or [save] itself failed (a platform write error) — never reports a
+  /// shortcut as saved when nothing was persisted. Mirrors `add()` in
+  /// `quick.js`.
   Future<QuickItem?> add(QuickItem item) async {
     final wanted = normalise(item._toJson());
     if (!_usable(wanted)) {
@@ -286,27 +288,35 @@ class QuickService {
     final existing = list.indexWhere((stored) => _same(stored, wanted));
     if (existing != -1) {
       final updated = List<QuickItem>.of(list)..[existing] = wanted;
-      await save(updated);
-      return wanted;
+      return switch (await save(updated)) {
+        Ok() => wanted,
+        Err() => null,
+      };
     }
 
     if (list.length >= maxQuick) {
       debugPrint('quick: already holding $maxQuick shortcuts');
       return null;
     }
-    await save([...list, wanted]);
-    return wanted;
+    return switch (await save([...list, wanted])) {
+      Ok() => wanted,
+      Err() => null,
+    };
   }
 
-  /// Drops the shortcut at [index]. Mirrors `remove()` in `quick.js`.
+  /// Drops the shortcut at [index]. Returns false when [index] is out of
+  /// range or [save] failed (a platform write error), so a caller never
+  /// reports a removal that did not happen. Mirrors `remove()` in `quick.js`.
   Future<bool> remove(int index) async {
     final list = await load();
     if (index < 0 || index >= list.length) {
       return false;
     }
     final updated = List<QuickItem>.of(list)..removeAt(index);
-    await save(updated);
-    return true;
+    return switch (await save(updated)) {
+      Ok() => true,
+      Err() => false,
+    };
   }
 
   /// Resolves [item] against the configured backends, by base URL — see the

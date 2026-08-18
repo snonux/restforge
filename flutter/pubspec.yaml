@@ -31,6 +31,12 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+  # Imported directly by test/services/quick_service_test.dart to
+  # fake a failing platform write (a store whose setValue throws) for the
+  # add/remove platform-failure path. A transitive dep of
+  # shared_preferences; listed here because the test imports it directly.
+  shared_preferences_platform_interface: ^2.4.2
+
   # Generates the Android launcher icon (mipmaps + adaptive icon) from
   # assets/icon/icon.png below. Not a runtime dependency: it is a build-time
   # tool, invoked by hand with `dart run flutter_launcher_icons` after the

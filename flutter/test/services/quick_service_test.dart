@@ -15,6 +15,8 @@ import 'package:restforge/models/result.dart';
 import 'package:restforge/services/quick_service.dart';
 import 'package:restforge/services/settings_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+import 'dart:convert';
 
 /// In-memory [SecretStore] fake — see settings_service_test.dart's copy for
 /// the full reasoning. [QuickService] never touches secrets itself; this is
@@ -37,20 +39,45 @@ class InMemorySecretStore implements SecretStore {
   }
 }
 
+/// A shared_preferences store whose writes always throw — for the platform
+/// write-failure path through [QuickService.add]/[QuickService.remove]. Reads
+/// (getAll) delegate to the in-memory store so load() still works; only
+/// [setValue] throws, so a test can assert the store's data is unchanged after
+/// a failed write (via [getAll]) — the optimistic SharedPreferences cache is a
+/// separate, per-instance concern.
+class _FailingWriteStore extends InMemorySharedPreferencesStore {
+  _FailingWriteStore([Map<String, Object>? seed])
+    : super.withData(seed ?? const <String, Object>{});
+
+  int setValueCalls = 0;
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    setValueCalls++;
+    throw Exception('disk full: preferences write failed');
+  }
+}
+
 const a = 'https://a.example/api/';
 const b = 'https://b.example/api/';
 
-QuickItem action(String label, String base, String holder, String name) => QuickItem(
+QuickItem action(String label, String base, String holder, String name) =>
+    QuickItem(
+      label: label,
+      backendName: 'x',
+      baseUrl: base,
+      kind: QuickKind.action,
+      holder: holder,
+      name: name,
+    );
+
+QuickItem document(String label, String base, String href) => QuickItem(
   label: label,
   backendName: 'x',
   baseUrl: base,
-  kind: QuickKind.action,
-  holder: holder,
-  name: name,
+  kind: QuickKind.document,
+  href: href,
 );
-
-QuickItem document(String label, String base, String href) =>
-    QuickItem(label: label, backendName: 'x', baseUrl: base, kind: QuickKind.document, href: href);
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -136,7 +163,9 @@ void main() {
 
     test('still resolves after the backend is renamed', () async {
       await quick.add(action('Power off', b, '/api/', 'power-off'));
-      await settings.saveBackends([const Backend(name: 'beta renamed', baseUrl: b, secret: 'k')]);
+      await settings.saveBackends([
+        const Backend(name: 'beta renamed', baseUrl: b, secret: 'k'),
+      ]);
 
       final item = await quick.get(0);
       final backend = await quick.backendFor(item!);
@@ -152,14 +181,18 @@ void main() {
     // half of that contract.
     test('a shortcut to a deleted backend survives', () async {
       await quick.add(action('Power off', a, '/api/', 'power-off'));
-      await settings.saveBackends([const Backend(name: 'beta', baseUrl: b, secret: 'k')]);
+      await settings.saveBackends([
+        const Backend(name: 'beta', baseUrl: b, secret: 'k'),
+      ]);
 
       expect(await quick.count(), 1);
     });
 
     test('it resolves to nothing', () async {
       await quick.add(action('Power off', a, '/api/', 'power-off'));
-      await settings.saveBackends([const Backend(name: 'beta', baseUrl: b, secret: 'k')]);
+      await settings.saveBackends([
+        const Backend(name: 'beta', baseUrl: b, secret: 'k'),
+      ]);
 
       final item = await quick.get(0);
       expect(await quick.backendFor(item!), isNull);
@@ -184,61 +217,88 @@ void main() {
       expect(resolved.map((backend) => backend?.name), ['alpha', 'beta']);
     });
 
-    test('returns null per item whose backend is not in the supplied list', () async {
-      await quick.add(action('one', a, '/api/', 'a1'));
-      await quick.add(document('two', b, '/api/status'));
-      const c = 'https://c.example/api/';
-      await quick.add(document('three', c, '/api/other'));
-      final items = await quick.load();
+    test(
+      'returns null per item whose backend is not in the supplied list',
+      () async {
+        await quick.add(action('one', a, '/api/', 'a1'));
+        await quick.add(document('two', b, '/api/status'));
+        const c = 'https://c.example/api/';
+        await quick.add(document('three', c, '/api/other'));
+        final items = await quick.load();
 
-      final resolved = quick.backendsFor(items, [
-        const Backend(name: 'alpha', baseUrl: a, secret: 'k'),
-        const Backend(name: 'beta', baseUrl: b, secret: 'k'),
-      ]);
-      expect(resolved.map((backend) => backend?.name), ['alpha', 'beta', null]);
-    });
+        final resolved = quick.backendsFor(items, [
+          const Backend(name: 'alpha', baseUrl: a, secret: 'k'),
+          const Backend(name: 'beta', baseUrl: b, secret: 'k'),
+        ]);
+        expect(resolved.map((backend) => backend?.name), [
+          'alpha',
+          'beta',
+          null,
+        ]);
+      },
+    );
 
-    test('is pure: it resolves against the passed list, never storage', () async {
-      // Storage has alpha@baseUrl=a (from setUp); pass a list whose a-backend
-      // is named differently, and an empty list, and confirm backendsFor uses
-      // only what it was handed — never falling back to a storage read.
-      await quick.add(action('Power off', a, '/api/', 'power-off'));
-      final item = (await quick.load()).single;
+    test(
+      'is pure: it resolves against the passed list, never storage',
+      () async {
+        // Storage has alpha@baseUrl=a (from setUp); pass a list whose a-backend
+        // is named differently, and an empty list, and confirm backendsFor uses
+        // only what it was handed — never falling back to a storage read.
+        await quick.add(action('Power off', a, '/api/', 'power-off'));
+        final item = (await quick.load()).single;
 
-      final fromPassed = quick.backendsFor([item], [
-        const Backend(name: 'not-from-storage', baseUrl: a, secret: 'x'),
-      ]);
-      expect(fromPassed.single?.name, 'not-from-storage');
+        final fromPassed = quick.backendsFor(
+          [item],
+          [const Backend(name: 'not-from-storage', baseUrl: a, secret: 'x')],
+        );
+        expect(fromPassed.single?.name, 'not-from-storage');
 
-      final fromEmpty = quick.backendsFor([item], const <Backend>[]);
-      expect(fromEmpty.single, isNull);
-    });
+        final fromEmpty = quick.backendsFor([item], const <Backend>[]);
+        expect(fromEmpty.single, isNull);
+      },
+    );
 
-    test('first backend wins for a duplicate base URL, mirroring backendFor', () async {
-      await quick.add(action('Power off', a, '/api/', 'power-off'));
-      final item = (await quick.load()).single;
+    test(
+      'first backend wins for a duplicate base URL, mirroring backendFor',
+      () async {
+        await quick.add(action('Power off', a, '/api/', 'power-off'));
+        final item = (await quick.load()).single;
 
-      final resolved = quick.backendsFor([item], [
-        const Backend(name: 'first', baseUrl: a, secret: 'k'),
-        const Backend(name: 'second', baseUrl: a, secret: 'k'),
-      ]);
-      expect(resolved.single?.name, 'first');
-      // and backendFor agrees, since they share the matching logic.
-      expect((await quick.backendFor(item))?.baseUrl, a);
-    });
+        final resolved = quick.backendsFor(
+          [item],
+          [
+            const Backend(name: 'first', baseUrl: a, secret: 'k'),
+            const Backend(name: 'second', baseUrl: a, secret: 'k'),
+          ],
+        );
+        expect(resolved.single?.name, 'first');
+        // and backendFor agrees, since they share the matching logic.
+        expect((await quick.backendFor(item))?.baseUrl, a);
+      },
+    );
   });
 
   group('an incomplete shortcut is refused', () {
     test('an action without a holder is refused', () async {
       final result = await quick.add(
-        const QuickItem(label: 'x', baseUrl: a, kind: QuickKind.action, name: 'power-off'),
+        const QuickItem(
+          label: 'x',
+          baseUrl: a,
+          kind: QuickKind.action,
+          name: 'power-off',
+        ),
       );
       expect(result, isNull);
     });
 
     test('an action without a name is refused', () async {
       final result = await quick.add(
-        const QuickItem(label: 'x', baseUrl: a, kind: QuickKind.action, holder: '/api/'),
+        const QuickItem(
+          label: 'x',
+          baseUrl: a,
+          kind: QuickKind.action,
+          holder: '/api/',
+        ),
       );
       expect(result, isNull);
     });
@@ -249,8 +309,22 @@ void main() {
     });
 
     test('nothing was stored', () async {
-      await quick.add(const QuickItem(label: 'x', baseUrl: a, kind: QuickKind.action, name: 'power-off'));
-      await quick.add(const QuickItem(label: 'x', baseUrl: a, kind: QuickKind.action, holder: '/api/'));
+      await quick.add(
+        const QuickItem(
+          label: 'x',
+          baseUrl: a,
+          kind: QuickKind.action,
+          name: 'power-off',
+        ),
+      );
+      await quick.add(
+        const QuickItem(
+          label: 'x',
+          baseUrl: a,
+          kind: QuickKind.action,
+          holder: '/api/',
+        ),
+      );
       await quick.add(document('x', a, ''));
 
       expect(await quick.count(), 0);
@@ -336,8 +410,90 @@ void main() {
 
   group('save', () {
     test('returns the persisted list on success', () async {
-      final result = await quick.save([action('Power off', a, '/api/', 'power-off')]);
+      final result = await quick.save([
+        action('Power off', a, '/api/', 'power-off'),
+      ]);
       expect(result, isA<Ok<List<QuickItem>>>());
     });
+  });
+
+  group('a platform write failure', () {
+    // save() returns Err on a platform-layer write failure (full disk, prefs
+    // flush error) — that is save()'s own documented contract. add() and
+    // remove() used to ignore the Result and report success anyway (a
+    // SnackBar saying "Saved"/"Removed" while nothing was persisted). They
+    // now inspect it: add returns null and remove returns false, so a caller
+    // never reports a write that did not happen. The store is asserted
+    // directly via getAll (bypassing the optimistic SharedPreferences cache,
+    // which setString updates before the store write is even attempted).
+    test('add returns null, not the item, when the write fails', () async {
+      final store = _FailingWriteStore();
+      SharedPreferencesStorePlatform.instance = store;
+
+      final result = await quick.add(
+        action('Power off', a, '/api/', 'power-off'),
+      );
+
+      expect(
+        result,
+        isNull,
+        reason: 'a failed write must not be reported as saved',
+      );
+      expect(
+        store.setValueCalls,
+        greaterThan(0),
+        reason: 'the add attempted to persist',
+      );
+      expect(
+        await store.getAll(),
+        isEmpty,
+        reason: 'nothing was written — setValue threw before the store changed',
+      );
+    });
+
+    test(
+      'remove returns false when the write fails, and the entry survives',
+      () async {
+        final seed = {
+          'flutter.restforge.quick': jsonEncode([
+            {
+              'label': 'one',
+              'backendName': 'x',
+              'baseUrl': a,
+              'kind': 'action',
+              'holder': '/api/',
+              'name': 'a',
+            },
+          ]),
+        };
+        final store = _FailingWriteStore(seed);
+        SharedPreferencesStorePlatform.instance = store;
+        // Force the cached SharedPreferences to re-read from the failing
+        // (seeded) store rather than the empty in-memory one setUp's
+        // saveBackends populated — the legacy cache is per-instance, so reload
+        // it from the now-current store.
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.reload();
+
+        final removed = await quick.remove(0);
+
+        expect(
+          removed,
+          isFalse,
+          reason: 'a failed write must not be reported as removed',
+        );
+        expect(
+          store.setValueCalls,
+          greaterThan(0),
+          reason: 'the remove attempted to persist',
+        );
+        expect(
+          (await store.getAll()).containsKey('flutter.restforge.quick'),
+          isTrue,
+          reason:
+              'the entry is still in storage — setValue threw before the remove persisted',
+        );
+      },
+    );
   });
 }
