@@ -1,5 +1,9 @@
 # RESTForge
 
+<p align="center">
+  <img src="docs/logo.svg" width="120" alt="RESTForge logo">
+</p>
+
 A generic [Siren](https://github.com/kevinswiber/siren) hypermedia browser.
 Point it at an API and it renders whatever that API offers — properties,
 sub-entities, links and actions. Follow a link and it fetches it. Press an

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RESTForge logo — the project mark, shared by both apps.
+
+  A rounded square in the RESTForge blue (#0A84FF) holding a JSON object's
+  curly braces with a request arrow (->, top) and a response arrow (<-, bottom)
+  between them: a hypermedia client sends a request and renders the resource
+  that comes back. The same motif is the Pebble watchapp's store icon
+  (pebble/store/icon.svg); this is the scalable master from which the Flutter
+  app icon and the README logo are derived.
+
+  The mark is the Pebble icon's exact paths, scaled up and centred on a 512
+  canvas so the visible stroke sits at ~19% margin — inside the Android
+  adaptive-icon safe zone (the central ~66%, i.e. ~18.5% margin each side),
+  so the braces are not cropped. The arrowheads are explicit polygons (not
+  <marker>) so every SVG rasteriser (ImageMagick, rsvg, browsers) renders
+  them identically. Stroke weights match the original mark (9 for braces,
+  8 for arrows).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Background: the RESTForge blue, rounded square. -->
+  <rect width="512" height="512" rx="114" fill="#0A84FF"/>
+
+  <!-- The mark: the Pebble icon's 144-canvas paths, scaled to sit at ~62%
+       of 512 (19% margin) so the adaptive-icon safe zone does not crop it. -->
+  <g transform="translate(10.5 10.5) scale(3.41)">
+    <g fill="none" stroke="#FFFFFF" stroke-width="9"
+       stroke-linecap="round" stroke-linejoin="round">
+      <!-- left { -->
+      <path d="M 54 30 C 36 30 36 54 30 72 L 54 72"/>
+      <path d="M 54 114 C 36 114 36 90 30 72 L 54 72"/>
+      <!-- right } -->
+      <path d="M 90 30 C 108 30 108 54 114 72 L 90 72"/>
+      <path d="M 90 114 C 108 114 108 90 114 72 L 90 72"/>
+      <!-- request arrow (->) and response arrow (<-) -->
+      <line x1="58" y1="56" x2="84" y2="56" stroke-width="8"/>
+      <line x1="86" y1="88" x2="60" y2="88" stroke-width="8"/>
+    </g>
+    <!-- arrowheads, filled -->
+    <g fill="#FFFFFF">
+      <polygon points="70,48 86,56 70,64"/>
+      <polygon points="74,80 58,88 74,96"/>
+    </g>
+  </g>
+</svg>

@@ -41,11 +41,14 @@ flutter:
   uses-material-design: true
 
 # Source artwork for `dart run flutter_launcher_icons`. Rasterised at
-# 1024x1024 from ../pebble/store/icon.svg — the same artwork the watchapp
-# ships in its store listing, so both apps present as the one product. The
-# background colour below is the SVG rect's fill; it shows through the 16%
-# inset the tool adds automatically around the adaptive icon's foreground
-# layer, so update both together if the artwork's background colour changes.
+# 1024x1024 from ../docs/logo.svg — the project logo, the same mark the
+# watchapp ships in its store listing (pebble/store/icon.svg), so both
+# apps present as the one product. The background colour below is the
+# SVG rect's fill; it is the adaptive icon's background layer and shows
+# through the transparent corners of the foreground (the logo's rounded
+# square), so update both together if the artwork's background colour
+# changes. The logo's mark is sized to sit inside the adaptive-icon safe
+# zone, so nothing important is cropped.
 flutter_launcher_icons:
   android: true
   image_path: "assets/icon/icon.png"
