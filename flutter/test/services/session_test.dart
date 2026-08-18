@@ -69,6 +69,8 @@ import 'package:http/testing.dart';
 import 'package:restforge/models/failure.dart';
 import 'package:restforge/services/action_service.dart';
 import 'package:restforge/services/http_service.dart';
+import 'package:restforge/services/idle_refresh_clock.dart'
+    show idleRefreshInterval;
 import 'package:restforge/services/live_service.dart';
 import 'package:restforge/services/nav_service.dart';
 import 'package:restforge/services/quick_service.dart';
@@ -283,7 +285,7 @@ class Env {
       );
     });
     final httpService = HttpService(client: client, log: (_) {});
-    nav = NavService(http: httpService, createTimer: this.timers.createTimer);
+    nav = NavService(http: httpService);
     actions = ActionService(
       http: httpService,
       log: (_) {},
@@ -309,6 +311,7 @@ class Env {
       actions: actions,
       live: live,
       quick: quick,
+      createTimer: this.timers.createTimer,
     );
   }
 
@@ -808,17 +811,18 @@ void main() {
         env.requested,
         isEmpty,
         reason:
-            'session.dart wires ActionService.hasPending into NavService '
-            'at construction time, so the idle clock must hold off while '
-            'a confirmation is outstanding',
+            'session.dart wires ActionService.hasPending into the '
+            'idle-refresh clock (IdleRefreshClock, task a21) at '
+            'construction time, so the clock must hold off while a '
+            'confirmation is outstanding',
       );
 
       // Confirming resolves the question -- and, via the invoke -> refetch
-      // glue this file itself owns, touches nav_service.dart directly,
-      // which is what gives its idle clock (pull-based: it only
-      // reconsiders the hook when nav_service.dart's own state next
-      // changes, see that file's _scheduleIdle) a chance to notice nothing
-      // is pending any more.
+      // glue this file itself owns, touches nav_service.dart directly, and
+      // nav_service.dart's notifyListeners is exactly what gives the
+      // idle-refresh clock (a listener: it reconsiders on every nav
+      // notification, see idle_refresh_clock.dart) a chance to notice
+      // nothing is pending any more.
       await env.session.answer(true);
       env.reset();
       await env.timers.tick(idleRefreshInterval);
@@ -831,92 +835,90 @@ void main() {
   });
 
   group('saved shortcuts (saveQuick/runQuick)', () {
-    test(
-      'saving an action asks the server nothing; running it re-reads the '
-      'holder and still asks before acting',
-      () async {
-        final env = Env();
-        final rows = await env.openRootRows();
-        await env.settings.saveBackends([backend]);
-
-        final saveOutcome = await env.session.saveQuick(
-          rows['Brew a pot of tea']!,
-        );
-        expect(saveOutcome, QuickSaveOutcome.saved);
-        expect(env.requested, isEmpty, reason: 'saving asks the server nothing');
-
-        final saved = (await env.quick.load()).single;
-        env.reset();
-
-        final runOutcome = await env.session.runQuick(saved);
-        expect(runOutcome, QuickRunOutcome.opened);
-        expect(
-          env.requested,
-          ['GET $base'],
-          reason:
-              'the holder is re-read so the action is looked up by name '
-              'in a current document, rather than fired at a remembered '
-              'href',
-        );
-        expect(
-          env.session.question,
-          isA<ConfirmQuestion>(),
-          reason: 'it still asks before acting, exactly as a hand-pressed '
-              'action would',
-        );
-        expect(
-          env.requested.any((r) => r.startsWith('POST')),
-          isFalse,
-          reason: 'the press alone sends nothing',
-        );
-
-        env.reset();
-        await env.session.answer(true);
-        expect(
-          env.requested.first,
-          'POST ${base}brew',
-          reason: 'confirming is what invokes it',
-        );
-      },
-    );
-
-    test(
-      'saving a link and running it fetches it directly, with nothing to '
-      'go back to',
-      () async {
-        final env = Env();
-        final rows = await env.openRootRows();
-        await env.settings.saveBackends([backend]);
-
-        final saveOutcome = await env.session.saveQuick(rows['shelves']!);
-        expect(saveOutcome, QuickSaveOutcome.saved);
-
-        final saved = (await env.quick.load()).single;
-        env.reset();
-
-        final runOutcome = await env.session.runQuick(saved);
-        expect(runOutcome, QuickRunOutcome.opened);
-        expect(env.requested, ['GET ${base}shelves']);
-        expect(env.session.document?.title, 'Shelves');
-        expect(
-          env.session.canGoBack,
-          isFalse,
-          reason:
-              'straight to the destination: nothing was walked, so there '
-              'is no history to pop back through',
-        );
-      },
-    );
-
-    test('a property row cannot be a shortcut, and nothing is stored', () async {
+    test('saving an action asks the server nothing; running it re-reads the '
+        'holder and still asks before acting', () async {
       final env = Env();
       final rows = await env.openRootRows();
+      await env.settings.saveBackends([backend]);
 
-      final outcome = await env.session.saveQuick(rows['kettle']!);
+      final saveOutcome = await env.session.saveQuick(
+        rows['Brew a pot of tea']!,
+      );
+      expect(saveOutcome, QuickSaveOutcome.saved);
+      expect(env.requested, isEmpty, reason: 'saving asks the server nothing');
 
-      expect(outcome, QuickSaveOutcome.notSaveable);
-      expect(await env.quick.count(), 0);
+      final saved = (await env.quick.load()).single;
+      env.reset();
+
+      final runOutcome = await env.session.runQuick(saved);
+      expect(runOutcome, QuickRunOutcome.opened);
+      expect(
+        env.requested,
+        ['GET $base'],
+        reason:
+            'the holder is re-read so the action is looked up by name '
+            'in a current document, rather than fired at a remembered '
+            'href',
+      );
+      expect(
+        env.session.question,
+        isA<ConfirmQuestion>(),
+        reason:
+            'it still asks before acting, exactly as a hand-pressed '
+            'action would',
+      );
+      expect(
+        env.requested.any((r) => r.startsWith('POST')),
+        isFalse,
+        reason: 'the press alone sends nothing',
+      );
+
+      env.reset();
+      await env.session.answer(true);
+      expect(
+        env.requested.first,
+        'POST ${base}brew',
+        reason: 'confirming is what invokes it',
+      );
     });
+
+    test('saving a link and running it fetches it directly, with nothing to '
+        'go back to', () async {
+      final env = Env();
+      final rows = await env.openRootRows();
+      await env.settings.saveBackends([backend]);
+
+      final saveOutcome = await env.session.saveQuick(rows['shelves']!);
+      expect(saveOutcome, QuickSaveOutcome.saved);
+
+      final saved = (await env.quick.load()).single;
+      env.reset();
+
+      final runOutcome = await env.session.runQuick(saved);
+      expect(runOutcome, QuickRunOutcome.opened);
+      expect(env.requested, ['GET ${base}shelves']);
+      expect(env.session.document?.title, 'Shelves');
+      expect(
+        env.session.canGoBack,
+        isFalse,
+        reason:
+            'straight to the destination: nothing was walked, so there '
+            'is no history to pop back through',
+      );
+    });
+
+    test(
+      'a property row cannot be a shortcut, and nothing is stored',
+      () async {
+        final env = Env();
+        final rows = await env.openRootRows();
+
+        final outcome = await env.session.saveQuick(rows['kettle']!);
+
+        expect(outcome, QuickSaveOutcome.notSaveable);
+        expect(await env.quick.count(), 0);
+      },
+    );
 
     test(
       'an already-embedded sub-entity row cannot be a shortcut either',
@@ -931,35 +933,32 @@ void main() {
       },
     );
 
-    test(
-      'a shortcut to a backend that is no longer configured explains '
-      'itself rather than reaching for it',
-      () async {
-        final env = Env();
-        final rows = await env.openRootRows();
-        await env.settings.saveBackends([backend]);
-        await env.session.saveQuick(rows['shelves']!);
-        final saved = (await env.quick.load()).single;
+    test('a shortcut to a backend that is no longer configured explains '
+        'itself rather than reaching for it', () async {
+      final env = Env();
+      final rows = await env.openRootRows();
+      await env.settings.saveBackends([backend]);
+      await env.session.saveQuick(rows['shelves']!);
+      final saved = (await env.quick.load()).single;
 
-        await env.settings.saveBackends([
-          const Backend(
-            name: 'other',
-            baseUrl: 'http://elsewhere.example/',
-            secret: 'x',
-          ),
-        ]);
-        env.reset();
+      await env.settings.saveBackends([
+        const Backend(
+          name: 'other',
+          baseUrl: 'http://elsewhere.example/',
+          secret: 'x',
+        ),
+      ]);
+      env.reset();
 
-        final outcome = await env.session.runQuick(saved);
+      final outcome = await env.session.runQuick(saved);
 
-        expect(outcome, QuickRunOutcome.backendMissing);
-        expect(
-          env.requested,
-          isEmpty,
-          reason: 'it does not reach for the old server',
-        );
-      },
-    );
+      expect(outcome, QuickRunOutcome.backendMissing);
+      expect(
+        env.requested,
+        isEmpty,
+        reason: 'it does not reach for the old server',
+      );
+    });
 
     test(
       'saving past MAX_QUICK is refused rather than silently dropped',
@@ -984,34 +983,28 @@ void main() {
       },
     );
 
-    test(
-      'an action shortcut whose action the server no longer offers reports '
-      'that rather than doing nothing',
-      () async {
-        final env = Env();
-        final rows = await env.openRootRows();
-        await env.settings.saveBackends([backend]);
-        await env.session.saveQuick(rows['Brew a pot of tea']!);
-        final saved = (await env.quick.load()).single;
-        // The next fetch of the holder no longer offers "brew" at all.
-        env.routes['GET $base'] = Route(
-          body: {
-            ...root,
-            'actions': const <Map<String, dynamic>>[],
-          },
-        );
-        env.reset();
+    test('an action shortcut whose action the server no longer offers reports '
+        'that rather than doing nothing', () async {
+      final env = Env();
+      final rows = await env.openRootRows();
+      await env.settings.saveBackends([backend]);
+      await env.session.saveQuick(rows['Brew a pot of tea']!);
+      final saved = (await env.quick.load()).single;
+      // The next fetch of the holder no longer offers "brew" at all.
+      env.routes['GET $base'] = Route(
+        body: {...root, 'actions': const <Map<String, dynamic>>[]},
+      );
+      env.reset();
 
-        final outcome = await env.session.runQuick(saved);
+      final outcome = await env.session.runQuick(saved);
 
-        expect(outcome, QuickRunOutcome.opened);
-        expect(env.session.notice, isA<ActionWithdrawn>());
-        expect(
-          env.session.question,
-          isNull,
-          reason: 'a withdrawn action is a real answer, not a question',
-        );
-      },
-    );
+      expect(outcome, QuickRunOutcome.opened);
+      expect(env.session.notice, isA<ActionWithdrawn>());
+      expect(
+        env.session.question,
+        isNull,
+        reason: 'a withdrawn action is a real answer, not a question',
+      );
+    });
   });
 }

@@ -11,9 +11,11 @@
 // embedded document is re-rendered instead), testFailureKeepsTheDocument
 // (the invariant this module exists to protect), testUnreachableMapping
 // (status 0 / a connection failure is unreachable, not error),
-// testSwitchingBackendsResetsTheStack, testIdleRefreshFires,
-// testIdleRefreshSuppressedByActionPendingHook, and (translated —
-// see below) testIdleRefreshFailureDoesNotOpenOverlay.
+// testSwitchingBackendsResetsTheStack. The idle-refresh cases
+// (testIdleRefreshFires, testIdleRefreshSuppressedByActionPendingHook,
+// testIdleRefreshFailureDoesNotOpenOverlay) moved to
+// idle_refresh_clock_test.dart with task a21, when the clock was extracted
+// from NavService into its own collaborator (idle_refresh_clock.dart).
 //
 // Deliberately NOT ported: testPickerFrame (the backend picker is
 // home_screen.dart's job here, not nav_service.dart's — see the module
@@ -31,17 +33,16 @@
 // check, and the state sequence a fetch goes through (loading, then a
 // terminal state) with the document left untouched throughout — this is
 // where this port deliberately does more than nav.js can, see the module
-// comment on why. The "idle refresh" group adds two cases with no
-// pebble/tools/test-nav.js counterpart at all: the app leaving and
-// returning to the foreground (this port's own, Pebble-less, second
-// suppression condition), and an embedded document (no address to refresh)
-// holding the clock off, which test-nav.js's fixtures never happen to
-// exercise for idle refresh specifically.
+// comment on why. The idle-refresh cases with no pebble/tools/test-nav.js
+// counterpart at all (the app leaving and returning to the foreground —
+// this port's own, Pebble-less, second suppression condition — and an
+// embedded document with no address holding the clock off) live in
+// idle_refresh_clock_test.dart now, alongside the rest of the idle clock
+// tests, since task a21 extracted the clock out of this module.
 
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -101,86 +102,12 @@ http.Response jsonResponse(Object body, {int status = 200}) => http.Response(
   headers: {'content-type': 'application/json'},
 );
 
-/// A fake, wall-clock-free timer, driven by [tick] — the Dart equivalent of
-/// test-nav.js's fake `setTimeout`/`tick()` (see the comment at the top of
-/// that file). Handed to [NavService] as `createTimer` by [Env] when a test
-/// passes one in, so [idleRefreshInterval] is driven without an actual
-/// 60-second wait.
-class FakeTimers {
-  Duration _elapsed = Duration.zero;
-  final List<_FakeTimer> _pending = [];
-
-  Timer createTimer(Duration duration, void Function() callback) {
-    final timer = _FakeTimer(this, _elapsed + duration, callback);
-    _pending.add(timer);
-    return timer;
-  }
-
-  void _remove(_FakeTimer timer) => _pending.remove(timer);
-
-  /// Advances the clock by [duration], firing every timer due at or before
-  /// the new time, earliest first. A fired callback may reschedule itself —
-  /// the idle refresh rearming its own timer once it settles, via
-  /// [NavService]'s own `_notify` — so the pending list is re-scanned after
-  /// each firing rather than snapshotted once, same as test-nav.js's
-  /// `tick()`. The short real delay after each firing lets the fetch a fired
-  /// timer starts (answered by the in-memory [MockClient] in [Env], not a
-  /// real socket) actually resolve before the next timer is chosen.
-  Future<void> tick(Duration duration) async {
-    final until = _elapsed + duration;
-    for (;;) {
-      _FakeTimer? next;
-      for (final timer in _pending) {
-        if (timer.fireAt <= until &&
-            (next == null || timer.fireAt < next.fireAt)) {
-          next = timer;
-        }
-      }
-      if (next == null) break;
-      _elapsed = next.fireAt;
-      _pending.remove(next);
-      next.callback();
-      for (var i = 0; i < 5; i++) {
-        await Future<void>.delayed(Duration.zero);
-      }
-    }
-    _elapsed = until;
-  }
-}
-
-class _FakeTimer implements Timer {
-  _FakeTimer(this._clock, this.fireAt, this.callback);
-
-  final FakeTimers _clock;
-  final Duration fireAt;
-  final void Function() callback;
-  bool _active = true;
-
-  @override
-  void cancel() {
-    if (_active) {
-      _active = false;
-      _clock._remove(this);
-    }
-  }
-
-  @override
-  bool get isActive => _active;
-
-  // A one-shot timer never repeats, so it fires at most once — mirrors
-  // dart:async's own one-shot Timer, whose `tick` is 0 before firing and 1
-  // after. Nothing in NavService reads this; it exists only to satisfy the
-  // Timer interface.
-  @override
-  int get tick => _active ? 0 : 1;
-}
-
 /// A fake backend, driven the same way test-nav.js's FakeXHR is: a route
 /// table keyed by the exact URL requested, a log of what was requested, and
 /// a couple of hand-toggled switches ([unreachable], [gate]) for the
 /// failure and mid-flight cases those tests exist to cover.
 class Env {
-  Env({FakeTimers? timers}) {
+  Env() {
     final client = MockClient((request) async {
       requested.add('${request.method} ${request.url}');
       if (unreachable) {
@@ -199,7 +126,6 @@ class Env {
     });
     nav = NavService(
       http: HttpService(client: client, log: (_) {}),
-      createTimer: timers?.createTimer,
     );
   }
 
@@ -407,26 +333,29 @@ void main() {
     // adopt() exists for exactly one caller, session.dart's runQuick (task
     // x11) -- see this method's own doc comment for why a saved shortcut
     // must not pay for the root fetch openRoot() always makes.
-    test('switches backend without fetching, discarding the old stack', () async {
-      final env = Env();
-      await env.nav.openRoot(backend);
-      final target =
-          rowNamed(env.nav.document!, 'shelves').target as FetchTarget;
-      await env.nav.fetch(target.href, title: 'shelves');
-      expect(env.nav.canGoBack, isTrue);
-      env.reset();
+    test(
+      'switches backend without fetching, discarding the old stack',
+      () async {
+        final env = Env();
+        await env.nav.openRoot(backend);
+        final target =
+            rowNamed(env.nav.document!, 'shelves').target as FetchTarget;
+        await env.nav.fetch(target.href, title: 'shelves');
+        expect(env.nav.canGoBack, isTrue);
+        env.reset();
 
-      const otherBase = 'https://other.example/';
-      final other = Backend(name: 'other', baseUrl: otherBase, secret: 'x');
+        const otherBase = 'https://other.example/';
+        final other = Backend(name: 'other', baseUrl: otherBase, secret: 'x');
 
-      env.nav.adopt(other);
+        env.nav.adopt(other);
 
-      expect(env.requested, isEmpty, reason: 'adopt fetches nothing');
-      expect(env.nav.backend, other);
-      expect(env.nav.document, isNull, reason: 'the old stack is gone');
-      expect(env.nav.canGoBack, isFalse);
-      expect(env.nav.state, DocumentState.ok);
-    });
+        expect(env.requested, isEmpty, reason: 'adopt fetches nothing');
+        expect(env.nav.backend, other);
+        expect(env.nav.document, isNull, reason: 'the old stack is gone');
+        expect(env.nav.canGoBack, isFalse);
+        expect(env.nav.state, DocumentState.ok);
+      },
+    );
 
     test('a fetch after adopt pushes onto a fresh, one-frame stack', () async {
       final env = Env();
@@ -537,130 +466,6 @@ void main() {
         env.gate!.complete();
         await inFlight;
         expect(env.nav.state, DocumentState.ok);
-      },
-    );
-  });
-
-  group('idle refresh', () {
-    // The idle clock re-reads the document on top of the stack every
-    // idleRefreshInterval when nothing else is going on — see
-    // nav_service.dart's module comment for the two things that hold it off
-    // and why a background refresh's failure is already covered by the same
-    // invariant every other fetch is.
-    test(
-      're-reads the document on top of the stack after the idle interval',
-      () async {
-        final timers = FakeTimers();
-        final env = Env(timers: timers);
-        await env.nav.openRoot(backend);
-        env.reset();
-
-        await timers.tick(idleRefreshInterval);
-
-        expect(env.requested, [
-          'GET $base',
-        ], reason: 'the visible document is re-read when idle');
-      },
-    );
-
-    test(
-      'a pending-action hook suppresses the refresh; the unwired default does not',
-      () async {
-        final timers = FakeTimers();
-        final env = Env(timers: timers);
-        await env.nav.openRoot(backend);
-        env.reset();
-
-        // With nothing wired, an action question is never pending as far as
-        // NavService is concerned — mirrors the unwired default nav.js's
-        // actionPending has before session.js runs setActionPendingCheck.
-        await timers.tick(idleRefreshInterval);
-        expect(
-          env.requested,
-          ['GET $base'],
-          reason:
-              'with no hook wired, idle refresh behaves as if nothing is pending',
-        );
-
-        env.reset();
-        env.nav.setActionPendingCheck(() => true);
-        await timers.tick(idleRefreshInterval);
-        expect(
-          env.requested,
-          isEmpty,
-          reason:
-              'a pending-action hook that answers true suppresses the idle refresh',
-        );
-      },
-    );
-
-    test(
-      'is suppressed while the app is not in the foreground, and resumes on returning',
-      () async {
-        final timers = FakeTimers();
-        final env = Env(timers: timers);
-        await env.nav.openRoot(backend);
-        env.nav.didChangeAppLifecycleState(AppLifecycleState.paused);
-        env.reset();
-
-        await timers.tick(idleRefreshInterval);
-        expect(
-          env.requested,
-          isEmpty,
-          reason:
-              'polling somebody else\'s API from the background is not something the user asked for',
-        );
-
-        env.nav.didChangeAppLifecycleState(AppLifecycleState.resumed);
-        await timers.tick(idleRefreshInterval);
-        expect(env.requested, [
-          'GET $base',
-        ], reason: 'returning to the foreground resumes the clock');
-      },
-    );
-
-    test(
-      'an embedded document has no address, so nothing is scheduled',
-      () async {
-        final timers = FakeTimers();
-        final env = Env(timers: timers);
-        await env.nav.openRoot(backend);
-        final target =
-            rowNamed(env.nav.document!, 'Top shelf').target as EmbeddedTarget;
-        env.nav.openEmbedded(target.index);
-        env.reset();
-
-        await timers.tick(idleRefreshInterval);
-
-        expect(
-          env.requested,
-          isEmpty,
-          reason:
-              'an embedded document cannot be re-fetched at all, idle or otherwise',
-        );
-      },
-    );
-
-    test(
-      'a failed idle refresh keeps the document on screen and reports the failure',
-      () async {
-        final timers = FakeTimers();
-        final env = Env(timers: timers);
-        await env.nav.openRoot(backend);
-        final beforeTitle = env.nav.document!.title;
-        env.routes.clear();
-        env.reset();
-
-        await timers.tick(idleRefreshInterval);
-
-        expect(
-          env.nav.document?.title,
-          beforeTitle,
-          reason:
-              'a refresh nobody asked for must never blank the screen, same as any other failure',
-        );
-        expect(env.nav.state, DocumentState.error);
-        expect(env.requested, ['GET $base']);
       },
     );
   });

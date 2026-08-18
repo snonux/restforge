@@ -124,7 +124,7 @@ import '../services/session.dart';
 import 'confirmation_sheet.dart';
 import 'detail_screen.dart';
 
-class DocumentScreen extends StatelessWidget {
+class DocumentScreen extends StatefulWidget {
   const DocumentScreen({super.key, required this.session});
 
   /// The coordinator this screen renders and dispatches every row press to.
@@ -134,15 +134,50 @@ class DocumentScreen extends StatelessWidget {
   /// already current. Pushed by `home_screen.dart`'s `_openBackend`/`_runShortcut`
   /// once a backend or a saved shortcut is opened, and also exercised by
   /// `test/screens/document_screen_test.dart`.
+  ///
+  /// This screen is also the framework-bound half of the idle-refresh
+  /// foreground gate (task a21): it registers a `WidgetsBindingObserver`
+  /// for its own lifetime that translates `AppLifecycleState` into the
+  /// pure-Dart bool the coordinator's clock reads — see
+  /// `_DocumentScreenState` and `_AppLifecycleObserver`.
   final SessionService session;
 
   @override
+  State<DocumentScreen> createState() => _DocumentScreenState();
+}
+
+class _DocumentScreenState extends State<DocumentScreen> {
+  _AppLifecycleObserver? _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    // The framework-bound half of the idle-refresh gate (task a21): a
+    // WidgetsBindingObserver that translates AppLifecycleState into the
+    // pure-Dart bool the SessionService's clock reads. Registered for this
+    // screen's lifetime — the only time idle refresh is relevant is while
+    // a document is on screen, and this screen is on screen for exactly
+    // that, so the watcher's lifetime matches the session's.
+    _lifecycle = _AppLifecycleObserver(widget.session);
+    WidgetsBinding.instance.addObserver(_lifecycle!);
+  }
+
+  @override
+  void dispose() {
+    if (_lifecycle != null) {
+      WidgetsBinding.instance.removeObserver(_lifecycle!);
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final session = widget.session;
     // DetailViewHost (task t11) is the only piece of this file that knows
     // about SessionService.detail — wrapping the rest of the screen in it
-    // is this task's entire wiring change here (see detail_screen.dart's
-    // module comment), the same shape as ConfirmationSheetHost below it
-    // for SessionService.question.
+    // is that task's wiring here (see detail_screen.dart's module comment),
+    // the same shape as ConfirmationSheetHost below it for
+    // SessionService.question.
     return DetailViewHost(
       session: session,
       child: ConfirmationSheetHost(
@@ -179,6 +214,23 @@ class DocumentScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// The framework-bound lifecycle watcher for one [SessionService]'s
+/// idle-refresh gate — see `_DocumentScreenState.initState`. Pure
+/// translation of `AppLifecycleState` into the `bool`
+/// [SessionService.setAppForeground] takes; this is the only place in the
+/// document screen that touches the widgets-framework lifecycle API,
+/// keeping the services pure-Dart (the point of task a21's extraction).
+class _AppLifecycleObserver extends WidgetsBindingObserver {
+  _AppLifecycleObserver(this._session);
+
+  final SessionService _session;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _session.setAppForeground(state == AppLifecycleState.resumed);
   }
 }
 

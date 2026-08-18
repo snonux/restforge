@@ -48,10 +48,11 @@
 ///
 /// **Dismissing without answering must still cancel the pending action**
 /// (`pebble/docs/DESIGN.md`'s "ask before acting", together with
-/// `nav_service.dart`'s idle-refresh clock, which is held off for exactly
-/// as long as `ActionService.hasPending` is true — see that file's module
-/// comment and `session.dart`'s constructor wiring
-/// `setActionPendingCheck`). Mirrors win_prompt.c's BACK handler
+/// `IdleRefreshClock`'s pending-action hook, which holds the idle clock off
+/// for exactly as long as `ActionService.hasPending` is true — see
+/// `idle_refresh_clock.dart`'s module comment and `session.dart`'s
+/// constructor wiring `setActionPendingCheck`). Mirrors win_prompt.c's BACK
+/// handler
 /// ("Declining is an answer, not a dismissal: JS is holding a pending
 /// action and would otherwise keep holding it."). A modal bottom sheet has
 /// three ways to close with nothing chosen — tap outside, drag down, or a

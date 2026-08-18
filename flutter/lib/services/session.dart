@@ -13,14 +13,18 @@
 ///    in hand, and — exactly as `session.js`'s `activate()` handles it
 ///    inline rather than asking `nav.js` to decide — this file just opens it
 ///    (see [detail]).
-///  - **Wiring `nav_service.dart`'s idle-refresh clock to
-///    `action_service.dart`'s pending question.** [NavService] must not
-///    depend on [ActionService] (see its module comment on
-///    [NavService.setActionPendingCheck]), and [ActionService] already sits
-///    on top of navigation-adjacent concepts (a [Backend], an [Entity]).
-///    This file is the one place allowed to know about both, so the
-///    constructor runs `nav.setActionPendingCheck(() => actions.hasPending)`
-///    once, exactly as `session.js` runs the equivalent `nav.js` call.
+///  - **Wiring the idle-refresh clock to `action_service.dart`'s pending
+///    question.** The clock (`IdleRefreshClock`, a collaborator of
+///    [NavService] since task a21 — see `idle_refresh_clock.dart`) must not
+///    depend on [ActionService], and [ActionService] already sits on top of
+///    navigation-adjacent concepts (a [Backend], an [Entity]). This file is
+///    the one place allowed to know about both, so the constructor creates
+///    the clock and runs `clock.setActionPendingCheck(() =>
+///    actions.hasPending)` once, exactly as `session.js` runs the equivalent
+///    `nav.js` call. This coordinator also owns the clock's lifetime and
+///    exposes [setAppForeground] for the framework-bound lifecycle watcher
+///    (`DocumentScreen`) that gates idle refresh on the app being in the
+///    foreground.
 ///  - **Everything `action_service.dart`'s own module comment defers to a
 ///    coordinator**: re-fetching the document an action was invoked from
 ///    (`pebble/docs/DESIGN.md`, "Never carry a document across an action"),
@@ -97,12 +101,15 @@
 ///    showing the sheet — see [NavService]'s module comment.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../models/failure.dart';
 import '../models/siren.dart';
 import 'action_service.dart';
 import 'http_service.dart';
+import 'idle_refresh_clock.dart';
 import 'live_service.dart';
 import 'nav_service.dart';
 import 'quick_service.dart';
@@ -278,10 +285,13 @@ enum QuickRunOutcome {
 /// [HttpService] is injected the same way every other service in this app
 /// is; [nav]/[actions]/[live]/[quick] are injected too, and default to plain
 /// instances (built on [http] for the first three), so a test can substitute
-/// a [NavService] with a fake timer (mirrors `nav_service_test.dart`'s
-/// `FakeTimers`) or a [LiveService] with a fake clock (mirrors
-/// `live_service_test.dart`'s `FakeClock`) without reaching inside this
-/// class. [QuickService] needs no [http] — it never does its own I/O (see
+/// any of them without reaching inside this class. The idle-refresh clock's
+/// timer factory ([createTimer]) is injected too, so a test drives
+/// [idleRefreshInterval] without a real 60s wait (mirrors
+/// `idle_refresh_clock_test.dart`'s `FakeTimers`; the same fake is shared
+/// with [LiveService]'s poll timer in `session_test.dart`); a [LiveService]
+/// with a fake clock (mirrors `live_service_test.dart`'s `FakeClock`).
+/// [QuickService] needs no [http] — it never does its own I/O (see
 /// its module comment) — so it is optional on its own, not derived from it.
 class SessionService extends ChangeNotifier {
   SessionService({
@@ -290,14 +300,20 @@ class SessionService extends ChangeNotifier {
     ActionService? actions,
     LiveService? live,
     QuickService? quick,
+    Timer Function(Duration duration, void Function() callback)? createTimer,
   }) : _nav = nav ?? NavService(http: http),
        _actions = actions ?? ActionService(http: http),
        _live = live ?? LiveService(http: http),
        _quick = quick ?? QuickService(),
        _ownsNav = nav == null {
+    // The idle-refresh clock is a collaborator of NavService (task a21),
+    // extracted so NavService stays pure-Dart. It owns the timer (with the
+    // injected [createTimer] a test drives without a real 60s wait), the
+    // pending-action hook, and the foreground gate.
+    _clock = IdleRefreshClock(nav: _nav, createTimer: createTimer);
     // The one piece of cross-module wiring neither nav_service.dart nor
     // action_service.dart can do to itself — see the module comment.
-    _nav.setActionPendingCheck(() => _actions.hasPending);
+    _clock.setActionPendingCheck(() => _actions.hasPending);
     // Forwarded, not duplicated: every navigation event nav_service.dart
     // already tracks (a fetch starting, landing or failing; a stack push,
     // pop or idle refresh) is exactly a change this coordinator's own
@@ -309,6 +325,11 @@ class SessionService extends ChangeNotifier {
   final ActionService _actions;
   final LiveService _live;
   final QuickService _quick;
+
+  /// The idle-refresh clock this coordinator owns — see `idle_refresh_clock.dart`.
+  /// `late final` because it is created in the constructor body (it needs
+  /// [_nav], built in the initializer list).
+  late final IdleRefreshClock _clock;
 
   /// Whether this service constructed [_nav] itself (and so owns disposing
   /// it) or was handed one built elsewhere (a test's, most often) — a
@@ -737,12 +758,23 @@ class SessionService extends ChangeNotifier {
   @override
   void dispose() {
     _nav.removeListener(notifyListeners);
+    _clock.dispose();
     _live.stop();
     if (_ownsNav) {
       _nav.dispose();
     }
     super.dispose();
   }
+
+  /// Tells this coordinator's idle-refresh clock whether the app is in the
+  /// foreground — called by a framework-bound lifecycle watcher (a
+  /// `WidgetsBindingObserver` in a widget, e.g. `DocumentScreen`) that
+  /// translates `AppLifecycleState` into this pure-Dart bool. See
+  /// `idle_refresh_clock.dart`'s module comment for why the framework coupling
+  /// lives in the widget layer, not here: this service and `NavService` never
+  /// import the widgets framework.
+  void setAppForeground(bool inForeground) =>
+      _clock.setInForeground(inForeground);
 }
 
 /// The server's own word for what an action produced: its `state` property,
