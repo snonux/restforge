@@ -13,8 +13,9 @@
 ///    again, exactly as if the user had walked there by hand; if it is no
 ///    longer offered, that is a real answer, reported rather than hidden.
 ///  - **A backend is stored by base URL, not by position** — see
-///    [backendFor]. Reordering the backend list (`settings_service.dart`)
-///    must not silently re-point a saved shortcut at a different server.
+///    [backendFor]/[backendsFor]. Reordering the backend list
+///    (`settings_service.dart`) must not silently re-point a saved shortcut
+///    at a different server.
 ///
 /// **A shortcut is a shortcut through the *navigation*, not through the
 /// *deciding*.** This file only stores and resolves — it never fetches a
@@ -62,9 +63,9 @@ enum QuickKind { action, document }
 /// comment for why an action never stores an href of its own. [backendName]
 /// is the backend's display name at the moment the shortcut was saved: kept
 /// for schema parity with `quick.js` (which stores it the same way) even
-/// though nothing on this port reads it back yet — [backendFor] resolves the
-/// *current* name by [baseUrl] instead, precisely so a rename is reflected
-/// rather than frozen at save time.
+/// though nothing on this port reads it back yet — [backendFor]/[backendsFor]
+/// resolves the *current* name by [baseUrl] instead, precisely so a rename
+/// is reflected rather than frozen at save time.
 @immutable
 class QuickItem {
   final String label;
@@ -304,8 +305,32 @@ class QuickService {
   /// `rows()`, not ported here — row-shaping for a screen is that screen's
   /// job, same as `settings_service.dart` leaving its own `rows()` behind).
   /// Mirrors `backendFor()` in `quick.js`.
+  ///
+  /// Single-shot: loads the backends itself. A caller that already has the
+  /// backend list (a screen that loaded it once for the picker) should use
+  /// [backendsFor] instead, which resolves against a supplied list and does
+  /// no storage read — N [backendFor] calls cost N secret-storage reads,
+  /// which is the wrong shape for a list of shortcuts on a hot path.
   Future<Backend?> backendFor(QuickItem item) async {
     final backends = await _settings.loadBackends();
+    return _resolve(item, backends);
+  }
+
+  /// Resolves [items] against [backends] in memory, by base URL — the same
+  /// matching [backendFor] uses, but without a storage read: pass the backend
+  /// list a screen has already loaded (home_screen loads it once for the
+  /// picker) so resolving N shortcuts does not cost N secret-storage reads on
+  /// a hot path. Returns null per item when its backend is gone, exactly like
+  /// [backendFor]. Pure function of its arguments; the by-base-URL matching
+  /// lives here so a screen does not re-implement it.
+  List<Backend?> backendsFor(List<QuickItem> items, List<Backend> backends) =>
+      [for (final item in items) _resolve(item, backends)];
+
+  /// First backend in [backends] whose [Backend.baseUrl] matches [item]'s —
+  /// the by-base-URL matching both [backendFor] and [backendsFor] share, so
+  /// the rule has one home (renaming or reordering backends does not re-point
+  /// a shortcut, see the module comment). Returns null when none matches.
+  static Backend? _resolve(QuickItem item, List<Backend> backends) {
     for (final backend in backends) {
       if (backend.baseUrl == item.baseUrl) {
         return backend;

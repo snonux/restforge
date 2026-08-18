@@ -166,6 +166,68 @@ void main() {
     });
   });
 
+  group('backendsFor resolves a list against a supplied backend list', () {
+    // backendsFor is the batch, in-memory resolver home_screen uses so N
+    // shortcuts cost one backend load, not N+1 secret-storage reads. These
+    // pin the matching (by base URL, first match wins, null for gone) and —
+    // critically — that it is pure: it resolves against the *passed* list and
+    // never reads storage, so the caller's already-loaded list is what counts.
+    test('resolves each shortcut to its backend by base URL', () async {
+      await quick.add(action('Power off', a, '/api/', 'power-off'));
+      await quick.add(document('Status', b, '/api/status'));
+      final items = await quick.load();
+
+      final resolved = quick.backendsFor(items, [
+        const Backend(name: 'alpha', baseUrl: a, secret: 'k'),
+        const Backend(name: 'beta', baseUrl: b, secret: 'k'),
+      ]);
+      expect(resolved.map((backend) => backend?.name), ['alpha', 'beta']);
+    });
+
+    test('returns null per item whose backend is not in the supplied list', () async {
+      await quick.add(action('one', a, '/api/', 'a1'));
+      await quick.add(document('two', b, '/api/status'));
+      const c = 'https://c.example/api/';
+      await quick.add(document('three', c, '/api/other'));
+      final items = await quick.load();
+
+      final resolved = quick.backendsFor(items, [
+        const Backend(name: 'alpha', baseUrl: a, secret: 'k'),
+        const Backend(name: 'beta', baseUrl: b, secret: 'k'),
+      ]);
+      expect(resolved.map((backend) => backend?.name), ['alpha', 'beta', null]);
+    });
+
+    test('is pure: it resolves against the passed list, never storage', () async {
+      // Storage has alpha@baseUrl=a (from setUp); pass a list whose a-backend
+      // is named differently, and an empty list, and confirm backendsFor uses
+      // only what it was handed — never falling back to a storage read.
+      await quick.add(action('Power off', a, '/api/', 'power-off'));
+      final item = (await quick.load()).single;
+
+      final fromPassed = quick.backendsFor([item], [
+        const Backend(name: 'not-from-storage', baseUrl: a, secret: 'x'),
+      ]);
+      expect(fromPassed.single?.name, 'not-from-storage');
+
+      final fromEmpty = quick.backendsFor([item], const <Backend>[]);
+      expect(fromEmpty.single, isNull);
+    });
+
+    test('first backend wins for a duplicate base URL, mirroring backendFor', () async {
+      await quick.add(action('Power off', a, '/api/', 'power-off'));
+      final item = (await quick.load()).single;
+
+      final resolved = quick.backendsFor([item], [
+        const Backend(name: 'first', baseUrl: a, secret: 'k'),
+        const Backend(name: 'second', baseUrl: a, secret: 'k'),
+      ]);
+      expect(resolved.single?.name, 'first');
+      // and backendFor agrees, since they share the matching logic.
+      expect((await quick.backendFor(item))?.baseUrl, a);
+    });
+  });
+
   group('an incomplete shortcut is refused', () {
     test('an action without a holder is refused', () async {
       final result = await quick.add(

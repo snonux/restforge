@@ -17,7 +17,7 @@
 /// screen talks to [QuickService] directly, the same way it talks to
 /// [SettingsService] for the backend list; there is nothing to compose. Each
 /// row also shows the shortcut's *current* backend, resolved by base URL
-/// ([QuickService.backendFor]) rather than frozen at save time — a renamed
+/// ([QuickService.backendsFor]) rather than frozen at save time — a renamed
 /// or deleted backend is reflected (or reported as "backend removed") the
 /// next time this screen loads, never silently dropped.
 ///
@@ -96,7 +96,7 @@ class _HomeScreenState extends State<HomeScreen> {
   /// this the picker would keep showing whatever it loaded at startup.
   /// Also reloads the shortcuts list: a shortcut's shown backend name (or
   /// "backend removed") is resolved against the *current* backend list
-  /// (see [QuickService.backendFor]), which the editor may have just
+  /// (see [QuickService.backendsFor]), which the editor may have just
   /// changed.
   void _reloadBackends() {
     setState(() {
@@ -114,14 +114,19 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Pairs every stored shortcut with the backend it currently resolves to
-  /// (or null — see [_QuickTile]'s "backend removed" case), reusing
-  /// [QuickService.backendFor] rather than re-implementing its by-base-URL
-  /// matching here.
+  /// (or null — see [_QuickTile]'s "backend removed" case), resolving against
+  /// the backend list this screen has *already* loaded for the picker
+  /// ([_backendsFuture]) via [QuickService.backendsFor] — not [backendFor],
+  /// which would re-read shared_preferences and re-hydrate every secret from
+  /// Keystore-backed secure storage once per shortcut. N shortcuts cost one
+  /// backend load this way, not N+1, and secure storage is slow on Android.
   Future<List<_QuickRow>> _loadQuickRows() async {
     final items = await _quick.load();
+    final backends = await _backendsFuture;
+    final resolved = _quick.backendsFor(items, backends);
     return [
-      for (final item in items)
-        _QuickRow(item: item, backend: await _quick.backendFor(item)),
+      for (var i = 0; i < items.length; i++)
+        _QuickRow(item: items[i], backend: resolved[i]),
     ];
   }
 
@@ -292,7 +297,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 /// One saved shortcut paired with the backend it currently resolves to —
 /// null once that backend has been renamed away or deleted (see
-/// [QuickService.backendFor]), which [_QuickTile] shows as "backend
+/// [QuickService.backendsFor]), which [_QuickTile] shows as "backend
 /// removed" rather than dropping the row.
 class _QuickRow {
   const _QuickRow({required this.item, required this.backend});
