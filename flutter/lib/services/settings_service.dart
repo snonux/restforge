@@ -25,6 +25,10 @@
 /// would leave the app on a blank screen with no way to reach the settings
 /// screen and fix it — see AGENTS.md section 5 ("Error model").
 ///
+/// This storage pattern is copied deliberately by `quick_service.dart` (see
+/// its module comment); do not extract a shared helper until a *third*
+/// prefs-JSON-array store appears (Rule-of-Three).
+///
 /// A backend is:
 ///   name       display name, shown on the backend picker
 ///   baseUrl    the Siren API root, absolute, ending in '/'

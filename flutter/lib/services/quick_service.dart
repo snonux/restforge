@@ -35,6 +35,17 @@
 /// still come up even if this preference is corrupt. Nothing stored here is
 /// a secret, so unlike a [Backend]'s API key, everything lives in
 /// `shared_preferences`; there is no secure-storage half to this module.
+///
+/// The decode-tolerate-cap machinery (`load`/`save`/`_normaliseStoredList`/
+/// `_capAndFilter`/`_trim`, and `count`/`get`) — `normalise`/`_usable` stay
+/// per-type — is duplicated from `settings_service.dart` on purpose. This is
+/// a Rule-of-Three-not-met case — two stores, not three — and extracting a
+/// `PrefsJsonListStore` helper now would couple two bounded value types
+/// ([Backend] vs [QuickItem]) before a third store exists, the premature
+/// abstraction YAGNI warns against. The duplication was weighed and held;
+/// revisit and extract only the `_trim`/decode-tolerate part when a *third*
+/// prefs-JSON-array store appears. The marker is bidirectional:
+/// `settings_service.dart`'s storage-pattern paragraph says the same.
 library;
 
 import 'dart:convert';
