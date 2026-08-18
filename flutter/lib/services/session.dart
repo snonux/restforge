@@ -62,6 +62,22 @@
 /// action's own outcome triggers, since that refresh is exactly the moment
 /// the notice it just set is meant to be seen next to.
 ///
+/// The three overlay states stay on this one [ChangeNotifier] rather than
+/// splitting into per-concern notifiers (a DetailNotifier/QuestionNotifier/
+/// NoticeNotifier) to scope rebuilds — an ISP tension that was weighed and
+/// held. The subtree under `DocumentScreen`'s `ListenableBuilder`
+/// rebuilds on every notification (it listens to this service, and
+/// `DetailViewHost`/`ConfirmationSheetHost` depend on the whole service for
+/// one slice each), but the rebuild is cheap — the row list is a lazy `ListView.builder` and
+/// the banners are a handful of one-line widgets, so re-creating the widget
+/// description to diff is sub-millisecond — and there is no measured jank,
+/// no large list, and no screen whose rebuild is genuinely expensive.
+/// Splitting would add a second state vocabulary (three notifiers and their
+/// wiring) for a scoped-rebuild benefit with no buyer, the exact coupling
+/// cost AGENTS.md section 5 warns against. Revisit when a screen's rebuild
+/// is demonstrably the cost (a large non-lazy list, heavy per-row work, or
+/// measured jank); until then one notifier fits this single-document browser.
+///
 /// **What does not carry over**, beyond the AppMessage/PebbleKit layer this
 /// whole port has no equivalent of (`flutter/AGENTS.md` section 4):
 ///
