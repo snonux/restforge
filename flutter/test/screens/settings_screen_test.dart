@@ -330,6 +330,55 @@ void main() {
       expect(find.byKey(const Key('error')), findsOneWidget);
     });
   });
+
+  group(
+    'a secure-storage read failure shows the editor, not a spinner (921)',
+    () {
+      testWidgets(
+        'the editor comes up with an empty secret when the read fails',
+        (tester) async {
+          // Seed a backend with a working store so its metadata is in prefs, then
+          // load it through a store whose read throws (a locked Keystore). The
+          // editor must still come up -- with the backend's name and an empty
+          // secret the user can re-enter -- rather than hanging on the loading
+          // spinner (which is what happens if loadBackends throws past _load).
+          await settings.saveBackends([
+            const Backend(name: 'homelab', baseUrl: 'https://h/', secret: 'k'),
+          ]);
+          final failing = SettingsService(
+            secretStore: _ReadFailingSecretStore(),
+          );
+          await pumpScreen(tester, service: failing);
+
+          expect(
+            find.byKey(const Key('name-0')),
+            findsOneWidget,
+            reason: 'the backend loads -- the editor is shown, not a spinner',
+          );
+          expect(
+            tester
+                .widget<TextField>(find.byKey(const Key('name-0')))
+                .controller!
+                .text,
+            'homelab',
+          );
+          expect(
+            tester
+                .widget<TextField>(find.byKey(const Key('secret-0')))
+                .controller!
+                .text,
+            '',
+            reason: 'a read failure degrades to an empty secret',
+          );
+          expect(
+            find.byType(CircularProgressIndicator),
+            findsNothing,
+            reason: 'no infinite loading spinner',
+          );
+        },
+      );
+    },
+  );
 }
 
 /// A [SecretStore] that fails every write -- see
@@ -342,6 +391,20 @@ class _FailingSecretStore implements SecretStore {
   @override
   Future<void> write(String key, String value) async =>
       throw Exception('write failed');
+
+  @override
+  Future<void> delete(String key) async {}
+}
+
+/// A [SecretStore] whose reads throw -- stands in for a corrupted/locked
+/// Keystore or an encrypted-read I/O error, the secure-storage read failure
+/// SettingsService.loadBackends must not let escape (task 921).
+class _ReadFailingSecretStore implements SecretStore {
+  @override
+  Future<String?> read(String key) async => throw Exception('read failed');
+
+  @override
+  Future<void> write(String key, String value) async {}
 
   @override
   Future<void> delete(String key) async {}

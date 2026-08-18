@@ -212,8 +212,30 @@ class SettingsService {
     if (metadata.isEmpty) {
       return metadata;
     }
-    final secrets = await Future.wait(metadata.map((backend) => _secrets.read(_secretKey(backend))));
-    return [for (var i = 0; i < metadata.length; i++) metadata[i].copyWith(secret: secrets[i] ?? '')];
+    // A secure-storage read failure (a corrupted/locked Android Keystore, an
+    // I/O error during an encrypted read — the kinds of platform failures
+    // AGENTS.md section 8 lists) degrades to an empty secret, never a throw:
+    // this method runs at startup, so a throw would leave the app with no way
+    // to reach the settings screen and re-enter the key (see the module
+    // comment's "Never throws" contract). The backend still loads, with an
+    // empty secret the user can refill.
+    final secrets = await Future.wait(metadata.map(_readSecret));
+    return [
+      for (var i = 0; i < metadata.length; i++)
+        metadata[i].copyWith(secret: secrets[i] ?? ''),
+    ];
+  }
+
+  /// Reads one backend's secret, treating a platform read failure as a
+  /// missing one (null) — see [loadBackends]. A missing or unreadable secret
+  /// both end up as the empty string in the returned [Backend].
+  Future<String?> _readSecret(Backend backend) async {
+    try {
+      return await _secrets.read(_secretKey(backend));
+    } catch (error) {
+      debugPrint('settings: could not read the secret for "${backend.name}": $error');
+      return null;
+    }
   }
 
   /// Same as [loadBackends] but without the secret hydration — used both as

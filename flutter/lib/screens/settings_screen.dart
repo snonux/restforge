@@ -67,14 +67,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _load() async {
-    final backends = await _settings.loadBackends();
-    if (!mounted) {
-      return;
+    try {
+      final backends = await _settings.loadBackends();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _rows.addAll(backends.map(_BackendRow.fromBackend));
+        _loading = false;
+      });
+    } catch (error) {
+      // loadBackends is not meant to throw (its own "Never throws" contract),
+      // but if it ever does, do not leave the editor stuck on the loading
+      // spinner with no way to reach the fields and fix it. Show the error and
+      // drop out of loading so the editor stays reachable.
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = 'Could not load backends: $error';
+        _loading = false;
+      });
     }
-    setState(() {
-      _rows.addAll(backends.map(_BackendRow.fromBackend));
-      _loading = false;
-    });
   }
 
   void _addRow() {

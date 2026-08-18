@@ -49,6 +49,21 @@ class FailingSecretStore implements SecretStore {
   Future<void> delete(String key) async {}
 }
 
+/// A [SecretStore] whose reads throw, standing in for a corrupted/locked
+/// Keystore or an encrypted-read I/O error — the secure-storage read failure
+/// SettingsService.loadBackends must not let escape (task 921). Writes and
+/// deletes are unused by the read path.
+class ReadFailingSecretStore implements SecretStore {
+  @override
+  Future<String?> read(String key) async => throw Exception('read failed');
+
+  @override
+  Future<void> write(String key, String value) async {}
+
+  @override
+  Future<void> delete(String key) async {}
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -170,6 +185,32 @@ void main() {
 
       expect(result, isA<Err<List<Backend>>>());
     });
+
+    test(
+      'a secure-storage read failure degrades to empty secrets, never throws',
+      () async {
+        // Seed a backend through a working store, then load it back through a
+        // store whose read throws — a corrupted/locked Keystore. loadBackends
+        // must not throw (it runs at startup; a throw leaves the app with no
+        // way to reach the settings screen), and must still return the
+        // backend with an empty secret the user can re-enter.
+        await settings.saveBackends([
+          const Backend(name: 'homelab', baseUrl: 'https://h/', secret: 'k'),
+        ]);
+        final failing = SettingsService(secretStore: ReadFailingSecretStore());
+
+        final backends = await failing.loadBackends();
+
+        expect(backends.length, 1, reason: 'the backend still loads');
+        expect(backends.single.name, 'homelab');
+        expect(backends.single.baseUrl, 'https://h/');
+        expect(
+          backends.single.secret,
+          '',
+          reason: 'a read failure degrades to an empty secret, not a throw',
+        );
+      },
+    );
   });
 
   group('incomplete entries', () {
