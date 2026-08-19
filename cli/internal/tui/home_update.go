@@ -16,8 +16,9 @@ import (
 // homeModel.hintLine (home.go) for where Home's own hint text lives
 // instead.
 var (
-	homeTabBinding   = key.NewBinding(key.WithKeys("tab"))
-	homeEnterBinding = key.NewBinding(key.WithKeys("enter"))
+	homeTabBinding      = key.NewBinding(key.WithKeys("tab"))
+	homeEnterBinding    = key.NewBinding(key.WithKeys("enter"))
+	homeSettingsBinding = key.NewBinding(key.WithKeys("s"))
 )
 
 // updateHome routes a key event to whichever of Home's two lists has focus,
@@ -33,8 +34,25 @@ func (m Model) updateHome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, homeEnterBinding):
 		return m.activateHomeSelection()
+	case key.Matches(msg, homeSettingsBinding):
+		return m.openSettings(), nil
 	}
 	return m.updateHomeList(msg)
+}
+
+// openSettings switches the shell to the Settings screen, seeded from
+// Home's own backend list at this exact moment (homeModel.backendsSnapshot)
+// -- see settingsModel's own doc comment (settings.go) for why Settings
+// reads Home's list rather than internal/config a second time. Resized
+// immediately against the shell's last known window size, since Settings
+// did not exist yet to receive whichever tea.WindowSizeMsg last resized
+// Home -- mirrors how New (model.go) cannot size home/document until the
+// first WindowSizeMsg either, except here that message has typically
+// already arrived by the time this runs.
+func (m Model) openSettings() Model {
+	m.base = screenSettings
+	m.settings = newSettingsModel(m.home.backendsSnapshot()).resize(m.width, m.height)
+	return m
 }
 
 // updateHomeList forwards msg to whichever list has focus -- everything

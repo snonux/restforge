@@ -111,15 +111,15 @@ func (h homeModel) View() string {
 
 // emptyStateView is what Backends shows in place of the list when nothing
 // is configured. Points at both ways to add one -- the Settings screen
-// (task 931, not yet reachable from here, so named rather than linked) and
-// the restforge backends add CLI command, which already exists -- mirrors
-// home_screen.dart's _EmptyState, minus the button: there is nowhere for an
-// Enter press on this text to go yet.
+// (homeSettingsBinding, home_update.go) and the restforge backends add CLI
+// command, which already exists -- mirrors home_screen.dart's _EmptyState,
+// minus the button: an Enter press on this text has nowhere to go, but 's'
+// does.
 func (h homeModel) emptyStateView() string {
 	return SubtitleStyle.Render("No backends configured") + "\n" +
 		MutedStyle.Render(
 			"A backend is an API root, an auth header and a secret.\n"+
-				"Add one from the Settings screen, or run:\n\n"+
+				"Press s to add one, or run:\n\n"+
 				"  restforge backends add --name ... --base-url ... --secret ...",
 		) + "\n"
 }
@@ -127,13 +127,16 @@ func (h homeModel) emptyStateView() string {
 // hintLine is Home's own short key hint, shown under both lists --
 // keys.go's own doc comment reserves the shell's global three (quit/back/
 // help) for bindings every screen shares, so a screen-specific one (Enter,
-// Tab) is composed here instead rather than folded into that key map. Tab
-// is only worth mentioning once there is a second list to switch to.
+// Tab, 's') is composed here instead rather than folded into that key map.
+// Tab is only worth mentioning once there is a second list to switch to; 's'
+// (open Settings, homeSettingsBinding in home_update.go) is worth mentioning
+// unconditionally, the same way emptyStateView points at it when there is
+// nothing else on screen to find it from.
 func (h homeModel) hintLine() string {
 	if h.hasShortcuts && len(h.backends.Items()) > 0 {
-		return "↑/↓ move · enter select · tab switch list"
+		return "↑/↓ move · enter select · tab switch list · s settings"
 	}
-	return "↑/↓ move · enter select"
+	return "↑/↓ move · enter select · s settings"
 }
 
 // resize gives both lists their share of the available body height, after
@@ -183,6 +186,20 @@ func (h homeModel) selectedQuick() (quick.QuickItem, bool) {
 		return quick.QuickItem{}, false
 	}
 	return item.item, true
+}
+
+// backendsSnapshot reads the backend list's current items back out as plain
+// backend.Backend values -- used only to seed the Settings screen when it
+// opens (see home_update.go's openSettings and settings.go's
+// newSettingsModel), so Settings starts from exactly what Home last loaded
+// rather than reading internal/config a second time.
+func (h homeModel) backendsSnapshot() []backend.Backend {
+	items := h.backends.Items()
+	out := make([]backend.Backend, len(items))
+	for i, it := range items {
+		out[i] = it.(backendItem).backend
+	}
+	return out
 }
 
 // applyLoaded installs what homeInitCmd read from internal/config and

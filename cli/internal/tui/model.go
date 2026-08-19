@@ -47,6 +47,17 @@ type Model struct {
 	// own doc comment for why that resync is cheap to call unconditionally.
 	document documentModel
 
+	// settings is the Settings screen's own state -- the working backend
+	// list plus whichever of its two modes is current (settings.go). Unlike
+	// home and document, it is only ever meaningfully populated once the
+	// user actually opens Settings (see home_update.go's openSettings,
+	// wired to homeSettingsBinding): there is nothing for it to resync from
+	// on every Update the way documentModel resyncs from Session, since
+	// Settings has no equivalent of Session to resync from -- it edits
+	// internal/config directly, seeded from Home's own list at the moment
+	// it opens.
+	settings settingsModel
+
 	showHelp bool
 	quitting bool
 
@@ -66,6 +77,7 @@ func New(sess *session.Session) Model {
 		help:     help.New(),
 		home:     newHomeModel(),
 		document: newDocumentModel(),
+		settings: newSettingsModel(nil),
 	}
 }
 
@@ -90,6 +102,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.Width = msg.Width
 		m.home = m.home.resize(msg.Width, msg.Height)
 		m.document = m.document.resize(msg.Width, msg.Height)
+		m.settings = m.settings.resize(msg.Width, msg.Height)
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -115,8 +128,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.applyQuickRan(msg)
 		m.document = m.document.syncRows(m.session.Document())
 		return m, nil
+	case settingsSavedMsg:
+		return m.applySettingsSaved(msg)
 	}
 	return m, nil
+}
+
+// applySettingsSaved folds a settingsSavedMsg into the shell: a save failure
+// stays on the Settings screen with the error reported as its own notice
+// (settingsModel.notice), so the user can retry without losing the working
+// list; success returns to Home and re-runs homeInitCmd -- a full reload
+// from internal/config and internal/quick, exactly what Model.Init runs at
+// startup -- rather than hand-rolling a narrower "just the backends changed"
+// update, since a backend rename or removal can also change which backend a
+// saved shortcut now resolves to (see loadQuickRows, home_cmd.go).
+func (m Model) applySettingsSaved(msg settingsSavedMsg) (tea.Model, tea.Cmd) {
+	m.settings.saving = false
+	if msg.err != nil {
+		m.settings.notice = "could not save: " + msg.err.Error()
+		return m, nil
+	}
+	m.settings.notice = ""
+	m.base = screenHome
+	return m, homeInitCmd()
 }
 
 // View renders whichever screen deriveScreen picks, plus the help line
@@ -167,6 +201,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateHome(msg)
 	case screenDocument:
 		return m.updateDocument(msg)
+	case screenSettings:
+		return m.updateSettings(msg)
 	}
 	return m, nil
 }
@@ -187,6 +223,15 @@ func (m Model) handleBack() Model {
 		m.session.DismissDetail()
 		return m
 	}
+	if m.currentScreen() == screenSettings && m.settings.mode == settingsModeEdit {
+		// One level down, not all the way to Home: settingsModeEdit is its
+		// own sub-state within screenSettings (settings.go), the same way
+		// Detail layers over whatever base screen was current -- see
+		// settings_update.go's updateSettings for why this step never
+		// reaches updateSettingsEdit itself.
+		m.settings = m.settings.cancelEdit()
+		return m
+	}
 	if m.session.CanGoBack() {
 		m.session.Back()
 		return m
@@ -202,19 +247,22 @@ func (m Model) currentScreen() screen {
 }
 
 // currentScreenView renders the current screen's body: Home's own view
-// (home.go) and Document's own view (document.go) once either is current,
-// renderPlaceholder for every screen still pending -- see screen.go for
-// which task fills each one in. Grown one case at a time as each screen
-// task lands, rather than a closed switch with a default-panics canary
-// (render.RowTarget and session.SessionQuestion's own convention): unlike
-// those, "not yet implemented" is this switch's deliberate, temporary
-// default for the screens beyond Home and Document, not a bug.
+// (home.go), Document's own view (document.go) and Settings' own view
+// (settings.go) once one of them is current, renderPlaceholder for every
+// screen still pending -- see screen.go for which task fills each one in.
+// Grown one case at a time as each screen task lands, rather than a closed
+// switch with a default-panics canary (render.RowTarget and
+// session.SessionQuestion's own convention): unlike those, "not yet
+// implemented" is this switch's deliberate, temporary default for Confirm,
+// ValuePrompt and Detail, not a bug.
 func (m Model) currentScreenView() string {
 	switch m.currentScreen() {
 	case screenHome:
 		return m.home.View()
 	case screenDocument:
 		return m.document.View(m.session)
+	case screenSettings:
+		return m.settings.View()
 	}
 	return renderPlaceholder(m.currentScreen())
 }

@@ -32,14 +32,30 @@
 //     backend picker is out of NavService's scope. Picking a backend opens
 //     it (Session.OpenBackend); picking a shortcut runs it
 //     (Session.RunQuick); either switches the shell to the Document screen.
+//     The 's' binding (homeSettingsBinding, home_update.go) opens Settings.
+//   - document.go, document_items.go, document_update.go and
+//     document_banner.go are the Document screen: Session.Document's rows,
+//     with State/Failure overlaid on top.
+//   - settings.go, settings_items.go, settings_form.go, settings_update.go
+//     and settings_cmd.go are the Settings screen: the backend editor,
+//     reached from Home's 's' binding or its empty state. A working copy of
+//     the backend list (seeded from Home's own list, never re-read from
+//     internal/config) is edited through five bubbles/textinput.Models --
+//     one backend at a time, in its own mode -- validated through
+//     internal/backend.Normalise/Validate exactly like every other caller,
+//     and only reaches internal/config.SaveBackends once the user explicitly
+//     saves; see settings.go's own package-level doc comment for the fuller
+//     reasoning, including how this screen's two-mode shape differs from
+//     flutter/lib/screens/settings_screen.dart's single all-cards-at-once
+//     view and why.
 //
 // # What this package deliberately does not do yet
 //
-// Beyond Home, every other screen still does nothing but name itself:
-// Document does not render rows, Settings does not edit a backend, and so
-// on. Each is a placeholder task 531/931/631/731 (see this project's task
-// tracker) fills in. This package's job is the shell around them -- the
-// Model, the navigation between screen states, the shared styles and the
-// async pattern -- plus, now, the one screen (Home) that shell exists to
-// show first.
+// Confirm and ValuePrompt (session.SessionQuestion's two concrete answers)
+// and Detail (Session.Detail()) still do nothing but name themselves -- each
+// is a placeholder task 631/731 (see this project's task tracker) fills in.
+// This package's job is the shell around every screen -- the Model, the
+// navigation between screen states, the shared styles and the async pattern
+// -- plus, now, Home, Document and Settings, the three screens that shell
+// exists to show.
 package tui
