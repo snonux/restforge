@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/spinner"
 
 	"github.com/snonux/restforge/cli/internal/failure"
 	"github.com/snonux/restforge/cli/internal/nav"
@@ -16,13 +17,17 @@ import (
 // screen reads: Document, State and Failure -- the three accessors
 // nav_service.dart's module comment requires a caller to overlay on top of
 // each other rather than let one replace another (State/Failure lay over
-// Document, never instead of it). Its own interface, mirroring screenSource
-// in derive.go, so a test can drive documentModel with a plain fake instead
-// of a full Session wired to real nav/action/live instances.
+// Document, never instead of it) -- plus Notice and IsLive (task 831),
+// which document_notice.go overlays the same way, one layer further out.
+// Its own interface, mirroring screenSource in derive.go, so a test can
+// drive documentModel with a plain fake instead of a full Session wired to
+// real nav/action/live instances.
 type documentSource interface {
 	Document() *render.RenderedDocument
 	State() nav.DocumentState
 	Failure() *failure.Failure
+	Notice() session.SessionNotice
+	IsLive() bool
 }
 
 // *session.Session satisfies documentSource structurally; asserted here so
@@ -53,6 +58,15 @@ type documentModel struct {
 	// (see documentDismissBinding, document_update.go) the Dart original
 	// does not need.
 	dismissedFailure *failure.Failure
+
+	// spinner animates while Session.IsLive is true -- see
+	// document_notice.go's watchingBannerView, which is the only place this
+	// is rendered, and model.go's startSpinnerCmd/handleSpinnerTick for how
+	// its tick loop is driven. Kept on documentModel rather than Model
+	// itself since it belongs to the Document screen's own rendering the
+	// same way d.rows does, even though what drives it (Session.IsLive) is
+	// read at the Model.Update level.
+	spinner spinner.Model
 }
 
 // newDocumentModel builds the row list on documentDelegate (document_items.go),
@@ -69,7 +83,7 @@ func newDocumentModel() documentModel {
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(false)
 	l.DisableQuitKeybindings()
-	return documentModel{rows: l}
+	return documentModel{rows: l, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot))}
 }
 
 // resize gives the row list its share of the available body height, after
@@ -164,6 +178,9 @@ func (d documentModel) View(src documentSource) string {
 	if banner := d.failureBannerView(src); banner != "" {
 		b.WriteString(banner + "\n")
 	}
+	if banner := d.noticeBannerView(src); banner != "" {
+		b.WriteString(banner + "\n")
+	}
 	if len(doc.Rows) == 0 {
 		b.WriteString(MutedStyle.Render("This document has nothing to show.") + "\n")
 	} else {
@@ -175,10 +192,12 @@ func (d documentModel) View(src documentSource) string {
 
 // hintLine is the Document screen's own short key hint -- keys.go's own
 // doc comment reserves the shell's global three (quit/back/help) for
-// bindings every screen shares, so Enter and the failure-dismiss key are
-// composed here instead, the same split home.go's hintLine makes for Tab.
+// bindings every screen shares, so Enter and the dismiss key are composed
+// here instead, the same split home.go's hintLine makes for Tab. The same
+// 'd' binding dismisses either banner (or both at once, if both are
+// showing) -- see documentDismissBinding's own doc comment (document_update.go).
 func (d documentModel) hintLine(src documentSource) string {
-	if d.failureBannerView(src) != "" {
+	if d.failureBannerView(src) != "" || d.dismissibleNoticeShowing(src) {
 		return "↑/↓ move · enter select · d dismiss"
 	}
 	return "↑/↓ move · enter select"

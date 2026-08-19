@@ -21,6 +21,16 @@ var (
 	colorError   = lipgloss.AdaptiveColor{Light: "#AF0000", Dark: "#FF6E6E"}
 	colorSuccess = lipgloss.AdaptiveColor{Light: "#00875A", Dark: "#5FD787"}
 	colorBorder  = lipgloss.AdaptiveColor{Light: "#D0D0D0", Dark: "#444444"}
+
+	// colorInfo is a fixed blue, deliberately not derived from colorPrimary
+	// (deepOrange-adjacent -- see colorPrimary's own doc comment) the way
+	// document_banners.dart's neutral notice states used to be before commit
+	// 858df48 (cli history) gave them a fixed colour instead of a theme
+	// container: a "still running"/"gave up"/"no longer offered" banner
+	// tinted with the app's own warm primary read as beige/orange, easily
+	// mistaken for a warning or a half-hearted success. Used only by
+	// InfoStyle below.
+	colorInfo = lipgloss.AdaptiveColor{Light: "#0B61A4", Dark: "#6EC1FF"}
 )
 
 // Styles are the palette every screen in this package renders through,
@@ -60,11 +70,21 @@ var (
 	ErrorStyle = lipgloss.NewStyle().Bold(true).Foreground(colorError)
 
 	// SuccessStyle marks an action outcome that plainly succeeded. Kept
-	// distinct from ErrorStyle and from whatever a later task chooses for
-	// "in progress" -- see commit 858df48 (cli history) for the exact
-	// beige/orange confusion between neutral and success/warning states
-	// that a live-progress banner (a later task) must not repeat.
+	// distinct from ErrorStyle and InfoStyle below -- see commit 858df48
+	// (cli history) for the exact beige/orange confusion between neutral and
+	// success/warning states a live-progress banner must not repeat.
 	SuccessStyle = lipgloss.NewStyle().Foreground(colorSuccess)
+
+	// InfoStyle marks a neutral Session.Notice state -- an action still
+	// being watched, the watch giving up before the server ever said it was
+	// done, or an action the server no longer offers -- none of which is a
+	// failure or a success (see document_notice.go). Bold to read as
+	// clearly as ErrorStyle/SuccessStyle rather than blending into
+	// MutedStyle, which is for de-emphasised text, not a state worth
+	// noticing. Distinct colour from both of those on purpose -- see
+	// colorInfo's own doc comment for the beige/orange confusion this
+	// avoids.
+	InfoStyle = lipgloss.NewStyle().Bold(true).Foreground(colorInfo)
 
 	// SelectedItemStyle marks the row a bubbles/list cursor is currently
 	// on. Declared here, ahead of the Home/Document screens that are the

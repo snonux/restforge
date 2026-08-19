@@ -10,7 +10,10 @@ import (
 // own doc comment: a screen-specific key is that screen's own to add, not
 // folded into the three bindings every screen shares. Neither carries a
 // key.WithHelp -- see documentModel.hintLine (document.go) for where this
-// screen's own hint text lives instead.
+// screen's own hint text lives instead. documentDismissBinding clears
+// whichever of the failure banner and the notice banner is currently
+// dismissible -- both at once, if both are showing -- see
+// dismissDocumentBanners.
 var (
 	documentEnterBinding   = key.NewBinding(key.WithKeys("enter"))
 	documentDismissBinding = key.NewBinding(key.WithKeys("d"))
@@ -27,15 +30,38 @@ var (
 // is Document.
 func (m Model) updateDocument(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, documentDismissBinding) && m.session.Failure() != nil:
-		m.document.dismissedFailure = m.session.Failure()
-		return m, nil
+	case key.Matches(msg, documentDismissBinding) && m.hasDismissibleBanner():
+		return m.dismissDocumentBanners(), nil
 	case key.Matches(msg, documentEnterBinding):
 		return m.activateDocumentSelection()
 	}
 	var cmd tea.Cmd
 	m.document.rows, cmd = m.document.rows.Update(msg)
 	return m, cmd
+}
+
+// hasDismissibleBanner reports whether 'd' currently has anything to do --
+// see documentDismissBinding's own doc comment.
+func (m Model) hasDismissibleBanner() bool {
+	return m.session.Failure() != nil || m.document.dismissibleNoticeShowing(m.session)
+}
+
+// dismissDocumentBanners clears whichever of the failure banner
+// (documentModel.dismissedFailure) and the notice banner
+// (Session.DismissNotice) is currently showing and dismissible -- both, if
+// both are. Neither call performs any I/O -- recording a dismissed failure
+// only sets a field already in hand, and DismissNotice only clears
+// Session's own field the same way DismissDetail does (see Model.handleBack's
+// own doc comment on why calls like that never go through sessionCmd) -- so
+// this needs no tea.Cmd of its own.
+func (m Model) dismissDocumentBanners() Model {
+	if m.session.Failure() != nil {
+		m.document.dismissedFailure = m.session.Failure()
+	}
+	if m.document.dismissibleNoticeShowing(m.session) {
+		m.session.DismissNotice()
+	}
+	return m
 }
 
 // activateDocumentSelection activates the row the cursor is currently on:

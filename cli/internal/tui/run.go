@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"sync/atomic"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/snonux/restforge/cli/internal/action"
@@ -32,10 +34,39 @@ import (
 // failure by internal/cli's dispatch layer, not worked around here -- a
 // TUI that cannot reach a terminal genuinely cannot run.
 func Run() error {
-	p := tea.NewProgram(New(newProductionSession()), tea.WithAltScreen())
+	// The live watch's createTimer (live_cmd.go) needs the running
+	// *tea.Program to post liveTickMsgs onto, but the Program is built from
+	// the Model, which is built from the Session, whose *live.Live holds the
+	// createTimer -- a cycle. programSender breaks it: it is captured by the
+	// createTimer before the Program exists, and pointed at the Program once
+	// Run has one; the first live timer only fires once p.Run is underway, so
+	// the pointer is always set by the time Send is read. atomic.Pointer
+	// keeps that read/write race-free across the timer's own goroutine and
+	// this one.
+	sender := &programSender{}
+	p := tea.NewProgram(New(newProductionSession(sender)), tea.WithAltScreen())
+	sender.store(p)
 	_, err := p.Run()
 	return err
 }
+
+// programSender is the production msgSender (live_cmd.go) newLiveCreateTimer
+// posts liveTickMsgs through: a thin, race-free holder for the running
+// *tea.Program, pointed at the Program the moment Run has built it. A nil
+// program (before that point) makes Send a no-op rather than a panic; once
+// the Program has quit, tea.Program.Send is itself a no-op on the cancelled
+// context, so a late live timer firing after quit is harmless either way.
+type programSender struct {
+	program atomic.Pointer[tea.Program]
+}
+
+func (s *programSender) Send(msg tea.Msg) {
+	if p := s.program.Load(); p != nil {
+		p.Send(msg)
+	}
+}
+
+func (s *programSender) store(p *tea.Program) { s.program.Store(p) }
 
 // newProductionSession builds a Session on a fresh *httpclient.Client with
 // every default (timeouts, logging) client, action and live construction
@@ -46,7 +77,17 @@ func Run() error {
 // come from the interactive ValuePrompt overlay (task 631), not from a
 // one-shot --field flag, and live's log line has nowhere to go in a
 // full-screen TUI until a screen surfaces it.
-func newProductionSession() *session.Session {
+//
+// sender is the live watch's msgSender: internal/live's poll timer posts a
+// liveTickMsg through it instead of mutating Session on a bare timer
+// goroutine, so the poll runs inside a sessionCmd on a goroutine Bubble
+// Tea's Update loop scheduled -- see live_cmd.go's own package comment for
+// the data-race this is what closes.
+func newProductionSession(sender msgSender) *session.Session {
 	client := httpclient.New()
-	return session.New(nav.New(client), action.New(client), live.New(client))
+	return session.New(
+		nav.New(client),
+		action.New(client),
+		live.New(client, live.WithCreateTimer(newLiveCreateTimer(sender))),
+	)
 }

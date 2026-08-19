@@ -41,16 +41,23 @@ func newLinkedTestModel() Model {
 
 // fakeDocumentSource is documentModel's test double for documentSource --
 // see that interface's own doc comment for why documentModel.View takes it
-// rather than *session.Session directly.
+// rather than *session.Session directly. notice and isLive cover the two
+// accessors task 831 added (Notice, IsLive); they default to nil/false, so
+// every pre-831 test that does not set them keeps reading "no notice, not
+// live" exactly as it did before.
 type fakeDocumentSource struct {
 	doc     *render.RenderedDocument
 	state   nav.DocumentState
 	failure *failure.Failure
+	notice  session.SessionNotice
+	isLive  bool
 }
 
 func (f fakeDocumentSource) Document() *render.RenderedDocument { return f.doc }
 func (f fakeDocumentSource) State() nav.DocumentState           { return f.state }
 func (f fakeDocumentSource) Failure() *failure.Failure          { return f.failure }
+func (f fakeDocumentSource) Notice() session.SessionNotice      { return f.notice }
+func (f fakeDocumentSource) IsLive() bool                       { return f.isLive }
 
 func twoRowDoc() *render.RenderedDocument {
 	return &render.RenderedDocument{

@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/snonux/restforge/cli/internal/session"
@@ -117,52 +118,82 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		m.help.Width = msg.Width
-		m.home = m.home.resize(msg.Width, msg.Height)
-		m.document = m.document.resize(msg.Width, msg.Height)
-		m.settings = m.settings.resize(msg.Width, msg.Height)
-		m.detail = m.detail.resize(msg.Width, msg.Height)
-		return m, nil
+		return m.applyWindowSize(msg), nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	case liveTickMsg:
+		// A live watch's poll timer fired: internal/live's createTimer
+		// (live_cmd.go) posted this instead of invoking the poll callback on
+		// the timer's own goroutine, so the poll -- and the Session mutation
+		// it performs through internal/live's Handlers -- runs inside the
+		// sessionCmd handleLiveTick wraps it in, on a goroutine Update
+		// scheduled, never concurrently with this loop. See live_cmd.go's
+		// own package comment for the hazard this closes.
+		return m.handleLiveTick(msg)
+	case spinner.TickMsg:
+		// The live-progress spinner's own tick loop -- see
+		// startSpinnerCmd/handleSpinnerTick (live_cmd.go). Routed here rather
+		// than handled inside documentModel because TickMsg is a Bubble Tea
+		// message, not a Document-screen-local one, and the loop's IsLive
+		// gate reads Session at the Model level the same way every other
+		// resync does.
+		return m.handleSpinnerTick(msg)
 	case sessionUpdatedMsg:
 		// The tea.Cmd that just finished already mutated m.session in
 		// place (see sessionCmd) -- there is nothing further to apply
-		// here beyond resyncing the Document screen's own row list (see
-		// documentModel.syncRows's own doc comment) from whatever Session
+		// here beyond resyncing the Document screen from whatever Session
 		// now holds. Update still gets this message so Bubble Tea
 		// re-renders: View always re-reads m.session fresh, the same "no
 		// cached copy" contract internal/session's own package comment
 		// describes for a caller of its methods.
-		m.document = m.document.syncRows(m.session.Document())
-		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
-		m.detail = m.detail.syncFromSession(m.session.Detail())
-		return m, nil
+		return m.resyncDocumentScreen(), m.startSpinnerCmd()
 	case homeLoadedMsg:
 		m.home = m.home.applyLoaded(msg)
 		return m, nil
 	case homeOpenedMsg:
 		m.base = screenDocument
-		m.document = m.document.syncRows(m.session.Document())
-		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
-		m.detail = m.detail.syncFromSession(m.session.Detail())
-		return m, nil
+		return m.resyncDocumentScreen(), m.startSpinnerCmd()
 	case homeQuickRanMsg:
 		m = m.applyQuickRan(msg)
-		m.document = m.document.syncRows(m.session.Document())
 		// RunQuick (session/quick.go) may already have called askAction for
 		// an action shortcut, synchronously setting Session.Question() to a
 		// ConfirmQuestion or ValueQuestion before this message ever arrives
 		// -- resync the same way sessionUpdatedMsg does, so a shortcut gets
 		// exactly the confirmation flow a hand-reached action would.
-		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
-		m.detail = m.detail.syncFromSession(m.session.Detail())
-		return m, nil
+		return m.resyncDocumentScreen(), m.startSpinnerCmd()
 	case settingsSavedMsg:
 		return m.applySettingsSaved(msg)
 	}
 	return m, nil
+}
+
+// applyWindowSize forwards a tea.WindowSizeMsg to every screen's own
+// resize and records the new terminal size for View -- the one Update case
+// that is pure forwarding, split out so Update's switch stays a short
+// dispatcher.
+func (m Model) applyWindowSize(msg tea.WindowSizeMsg) Model {
+	m.width, m.height = msg.Width, msg.Height
+	m.help.Width = msg.Width
+	m.home = m.home.resize(msg.Width, msg.Height)
+	m.document = m.document.resize(msg.Width, msg.Height)
+	m.settings = m.settings.resize(msg.Width, msg.Height)
+	m.detail = m.detail.resize(msg.Width, msg.Height)
+	return m
+}
+
+// resyncDocumentScreen rebuilds the Document screen's own state from
+// Session after a Session-mutating step -- the shared body of the
+// sessionUpdatedMsg, homeOpenedMsg and homeQuickRanMsg cases, which all
+// leave Session in a state the Document screen must re-read. Returns m with
+// the row list (documentModel.syncRows -- a no-op when nothing changed), the
+// value-prompt overlay and the detail overlay resynced. Callers pair this
+// with startSpinnerCmd to (re)start the live-progress spinner when the
+// update left Session.IsLive true; it is a no-op otherwise.
+func (m Model) resyncDocumentScreen() Model {
+	m.document = m.document.syncRows(m.session.Document())
+	m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
+	m.detail = m.detail.syncFromSession(m.session.Detail())
+	return m
 }
 
 // applySettingsSaved folds a settingsSavedMsg into the shell: a save failure
