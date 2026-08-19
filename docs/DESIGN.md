@@ -1,17 +1,19 @@
-# RESTForge design — the contract both apps keep
+# RESTForge design — the contract all three apps keep
 
-This repository holds two apps — a Pebble watchapp ([`pebble/`](../pebble)) and an
-Android port ([`flutter/`](../flutter)) — and the contract below is the part they
-share: what a hypermedia client owes the person using it, written down once so
-it does not drift by being stated twice. It survived the change of language
-from ES5 to Dart and it survives every change to either app; a behaviour here
-is a requirement, not an implementation note.
+This repository holds three apps — a Pebble watchapp ([`pebble/`](../pebble)), an
+Android port ([`flutter/`](../flutter)) and a Go/Charm terminal client
+([`cli/`](../cli)) — and the contract below is the part they all share: what a
+hypermedia client owes the person using it, written down once so it does not
+drift by being stated three times. It survived the change of language from
+ES5 to Dart to Go and it survives every change to any of the three apps; a
+behaviour here is a requirement, not an implementation note.
 
 Each app keeps its own structural map — the watchapp's watch/phone split,
 two-screen layout and file map in
-[`pebble/docs/DESIGN.md`](../pebble/docs/DESIGN.md), and the Flutter port's module
+[`pebble/docs/DESIGN.md`](../pebble/docs/DESIGN.md), the Flutter port's module
 mapping and conventions in [`flutter/AGENTS.md`](../flutter/AGENTS.md) (sections 4
-and 5). This file is only the contract.
+and 5), and the Go port's module mapping in [`cli/AGENTS.md`](../cli/AGENTS.md)
+(section 4). This file is only the contract.
 
 ## The rule everything else follows from
 

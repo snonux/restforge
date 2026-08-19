@@ -1,17 +1,18 @@
 # RESTForge - AGENTS.md
 
-This repository holds **two** apps, and almost everything an agent needs is in
-the one it is working on. This file exists to route you there and to state the
-few things that are true of both.
+This repository holds **three** apps, and almost everything an agent needs is
+in the one it is working on. This file exists to route you there and to state
+the few things that are true of all three.
 
-- What the project is and how the two relate: [README.md](README.md)
-- The design and its invariants, written down once for both:
+- What the project is and how the three relate: [README.md](README.md)
+- The design and its invariants, written down once for all three:
   [docs/DESIGN.md](docs/DESIGN.md)
 
 | Working on | Read |
 |---|---|
 | The Pebble watchapp | [pebble/AGENTS.md](pebble/AGENTS.md) |
 | The Android app | [flutter/AGENTS.md](flutter/AGENTS.md) |
+| The Go/Charm CLI | [cli/AGENTS.md](cli/AGENTS.md) |
 
 ## Layout
 
@@ -20,8 +21,10 @@ pebble/     The Pebble watchapp: C on the watch, ES5 PebbleKit JS on the phone.
             Its own Justfile, package.json, wscript, docs/ and tests.
 flutter/    The Android app: Dart/Flutter, also runnable on Linux desktop.
             Its own Justfile, pubspec.yaml and tests.
-Justfile    Forwards to the two above; owns the repo-wide secret scan.
-README.md   What each is, and the contract both keep.
+cli/        The terminal client: Go/Charm, one binary, TUI + one-shot subcommands.
+            Its own Justfile, go.mod and tests.
+Justfile    Forwards to the three above; owns the repo-wide secret scan.
+README.md   What each is, and the contract all three keep.
 ```
 
 ## Root commands
@@ -29,13 +32,14 @@ README.md   What each is, and the contract both keep.
 ```sh
 just pebble <recipe>     # e.g. just pebble dev
 just flutter <recipe>    # e.g. just flutter run-linux
-just test                # both suites; neither needs an emulator or a device
-just check               # secret scan (whole tree) + both apps' code checks
+just cli <recipe>        # e.g. just cli run
+just test                # all three suites; none needs an emulator or a device
+just check               # secret scan (whole tree) + all three apps' code checks
 ```
 
 `just check` must print nothing.
 
-## What is true of both apps
+## What is true of all three apps
 
 These are contract, not implementation, and they survive the change of
 language. The full statement of each, with the reasoning, is in
@@ -43,7 +47,7 @@ language. The full statement of each, with the reasoning, is in
 
 - **Never build a URL.** Follow the href the server put in the document,
   resolved against the configured base. No rel, class, action name or property
-  name belonging to a particular server may appear in either app's source — the
+  name belonging to a particular server may appear in any app's source — the
   genericity grep in each `just check` enforces it, and it matches inside
   comments, so reword the comment rather than loosening the grep.
 - **Ask before acting.** Any method outside `GET`, `HEAD`, `OPTIONS`, `TRACE`
@@ -114,5 +118,5 @@ Per-app commit rules are in each app's own AGENTS.md. Repo-wide: never commit
 anything holding an API key. `just check-secrets` scans the whole working tree,
 tracked or not, and is the enforcement.
 
-Last updated: August 18, 2026
+Last updated: August 19, 2026
 Maintained for: RESTForge agents
