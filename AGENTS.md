@@ -63,46 +63,50 @@ language. The full statement of each, with the reasoning, is in
 
 ## Versioning
 
-One product, one version number, even though the two apps share no code, no
-store and no release process. `flutter/pubspec.yaml`'s `version:` field and
-`pebble/package.json`'s `version` field must always carry the same semantic
-version, and a release gets exactly **one** git tag — never one per
-subproject.
+One product, one version number, even though the three apps share no code, no
+store and no release process. `flutter/pubspec.yaml`'s `version:` field,
+`pebble/package.json`'s `version` field and `cli/internal/version/VERSION`
+must always carry the same semantic version, and a release gets exactly
+**one** git tag — never one per subproject.
 
-- `just version` — prints both apps' current version and fails loudly if
-  their semver portions have drifted apart.
-- `just bump-version x.y.z` — sets both files to `x.y.z` in one step. Flutter
-  additionally carries a `+N` build-number suffix (Android's `versionCode`,
-  which the Play Store requires to strictly increase on every upload); the
-  recipe increments that `N` by 1 on every bump. It is unrelated to semver
-  and Pebble has no equivalent, since the watchapp is not distributed through
-  a store.
+- `just version` — prints all three apps' current version and fails loudly
+  if their semver portions have drifted apart.
+- `just bump-version x.y.z` — sets all three files to `x.y.z` in one step.
+  Flutter additionally carries a `+N` build-number suffix (Android's
+  `versionCode`, which the Play Store requires to strictly increase on every
+  upload); the recipe increments that `N` by 1 on every bump. It is unrelated
+  to semver, and Pebble and the Go client have no equivalent, since neither
+  is distributed through a store. `cli/internal/version/VERSION` is a plain
+  one-line text file — the CLI has no structured manifest to edit in place —
+  embedded into the `restforge` binary via `go:embed` (see
+  `cli/internal/version/version.go`), so the file is the one source of truth
+  rather than a constant duplicating it.
 
 To cut a release:
 
 ```sh
-just bump-version 0.7.0          # edits both version files
+just bump-version 0.7.0          # edits all three version files
 just version                     # confirms they now agree
-just check && just test          # both apps still pass
-git add flutter/pubspec.yaml pebble/package.json
+just check && just test          # all three apps still pass
+git add flutter/pubspec.yaml pebble/package.json cli/internal/version/VERSION
 git commit -m "Bump version to 0.7.0"
 git tag v0.7.0                   # exactly one tag, at the repo root, not per app
 git push && git push --tags
 ```
 
-Both files change in the **same commit**, and the tag is created **once**,
-after that commit, at the repo root — not inside `pebble/` or `flutter/`. A
-tag named after only one subproject (`pebble-v0.7.0`, or a tag pushed twice
-with two different messages) means the two apps have been allowed to version
-independently again, which is the exact thing this section exists to
-prevent.
+All three files change in the **same commit**, and the tag is created
+**once**, after that commit, at the repo root — not inside `pebble/`,
+`flutter/` or `cli/`. A tag named after only one subproject
+(`pebble-v0.7.0`, or a tag pushed twice with two different messages) means
+the apps have been allowed to version independently again, which is the
+exact thing this section exists to prevent.
 
 Semantic versioning: increment `z` (patch) for fixes and small changes,
 `y` (minor) and reset `z` for new features, and `x` (major) only when
 explicitly asked for one — the same rule the `increment-version-and-push`
-skill uses elsewhere; the difference here is that "the project" means both
-subprojects together, and `bump-version` is the mechanism that keeps them
-together.
+skill uses elsewhere; the difference here is that "the project" means all
+three subprojects together, and `bump-version` is the mechanism that keeps
+them together.
 
 ## Commit policy
 

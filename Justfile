@@ -53,12 +53,14 @@ test:
 version:
     @flutter_version=$(grep '^version:' flutter/pubspec.yaml | sed -E 's/^version:[[:space:]]*//'); \
     pebble_version=$(grep '"version"' pebble/package.json | sed -E 's/.*"version":[[:space:]]*"([^"]*)".*/\1/'); \
+    cli_version=$(tr -d '[:space:]' < cli/internal/version/VERSION); \
     flutter_semver=$(echo "$flutter_version" | sed -E 's/\+.*//'); \
     echo "flutter: $flutter_version  (pubspec.yaml)"; \
     echo "pebble:  $pebble_version  (package.json)"; \
-    if [ "$flutter_semver" != "$pebble_version" ]; then \
-        echo "MISMATCH: flutter's semver ($flutter_semver) != pebble's version ($pebble_version)"; \
-        echo "Run 'just bump-version <x.y.z>' to bring both back in sync."; \
+    echo "cli:     $cli_version  (internal/version/VERSION)"; \
+    if [ "$flutter_semver" != "$pebble_version" ] || [ "$pebble_version" != "$cli_version" ]; then \
+        echo "MISMATCH: flutter ($flutter_semver), pebble ($pebble_version) and cli ($cli_version) disagree."; \
+        echo "Run 'just bump-version <x.y.z>' to bring all three back in sync."; \
         exit 1; \
     fi
 
@@ -85,10 +87,15 @@ bump-version version:
     new_build=$((old_build + 1))
     sed -i "s/^version:.*/version: {{ version }}+${new_build}/" flutter/pubspec.yaml
     sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"{{ version }}\"/" pebble/package.json
-    echo "flutter/pubspec.yaml -> $(grep '^version:' flutter/pubspec.yaml)"
-    echo "pebble/package.json  -> $(grep '"version"' pebble/package.json)"
+    # cli's VERSION is a plain one-line file (no structure to sed against), so
+    # rewrite the single line in the same one-line-per-file style as the two
+    # structured files above.
+    sed -i "s/.*/{{ version }}/" cli/internal/version/VERSION
+    echo "flutter/pubspec.yaml          -> $(grep '^version:' flutter/pubspec.yaml)"
+    echo "pebble/package.json           -> $(grep '"version"' pebble/package.json)"
+    echo "cli/internal/version/VERSION  -> $(cat cli/internal/version/VERSION)"
     echo ""
-    echo "Now: review the diff, commit both files in ONE commit, then:"
+    echo "Now: review the diff, commit all three files in ONE commit, then:"
     echo "  git tag v{{ version }}"
     echo "  git push && git push --tags"
 
