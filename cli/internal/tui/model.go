@@ -168,8 +168,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyQuickDeleted(msg)
 	case documentQuickSavedMsg:
 		return m.applyQuickSaved(msg)
+	case list.FilterMatchesMsg:
+		// list.Model's own filterItems debounces recomputing the match set
+		// away from every keystroke: typing a query returns a tea.Cmd that
+		// lands back here, at this package's own Update, some tens of
+		// milliseconds later -- not synchronously inside list.Model's own
+		// Update call the way a first glance at vikeys.go's filter handling
+		// might suggest. Without this case the message has nowhere to go
+		// (Bubble Tea does not know it belongs to a nested list.Model), so
+		// list.Model.filteredItems is never actually updated and every
+		// screen's own filter looks like it does nothing -- see
+		// applyFilterMatches's own doc comment for where it is routed.
+		return m.applyFilterMatches(msg)
 	}
 	return m, nil
+}
+
+// applyFilterMatches forwards msg to whichever screen-owned list.Model is
+// current -- Home's focused list, Document's row list, or Settings' backend
+// list while settingsModeList is current -- mirroring currentFilterState's
+// own routing (vikeys.go), since a FilterMatchesMsg only ever means
+// anything to the list that started the filterItems cmd producing it. A
+// message that lands after the user has navigated away from that list
+// (Confirm/ValuePrompt/Detail/Settings' own edit mode all have none) is
+// simply dropped -- there is nowhere for it to go and nothing on screen it
+// could affect.
+func (m Model) applyFilterMatches(msg list.FilterMatchesMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch m.currentScreen() {
+	case screenHome:
+		switch m.home.focus {
+		case homeFocusBackends:
+			m.home.backends, cmd = m.home.backends.Update(msg)
+		case homeFocusQuick:
+			m.home.shortcuts, cmd = m.home.shortcuts.Update(msg)
+		}
+	case screenDocument:
+		m.document.rows, cmd = m.document.rows.Update(msg)
+	case screenSettings:
+		if m.settings.mode == settingsModeList {
+			m.settings.list, cmd = m.settings.list.Update(msg)
+		}
+	}
+	return m, cmd
 }
 
 // applyWindowSize forwards a tea.WindowSizeMsg to every screen's own

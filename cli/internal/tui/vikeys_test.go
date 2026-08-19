@@ -2,6 +2,7 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -192,6 +193,123 @@ func TestHandleKeyDefersEscToClearAppliedFilter(t *testing.T) {
 	if !nm.session.CanGoBack() {
 		t.Error("esc while a filter was applied popped Session's navigation stack; it should have cleared the filter instead")
 	}
+}
+
+// --- regression: a real keystroke-driven filter actually narrows the list
+
+// filterMatchesWithin runs cmd and returns its result if it is (or
+// produces, once tea.BatchMsg is unwrapped) a list.FilterMatchesMsg within
+// timeout, discarding anything else. cmd is run on its own goroutine and
+// never waited on beyond timeout: bubbles/textinput's own cursor-blink cmd
+// (cursor.Model.BlinkCmd) genuinely blocks on a real context.WithTimeout
+// for its full blink interval (BlinkSpeed, on the order of half a second)
+// when invoked directly like this, outside Bubble Tea's own runtime that
+// would normally let it run concurrently with everything else -- calling
+// it synchronously in a tight per-keystroke loop is what made an earlier
+// version of this test take upwards of two seconds for five characters.
+// filterItems' own cmd (list.go), by contrast, is synchronous and returns
+// within microseconds, so a short timeout here is enough to tell the two
+// apart without waiting out a real blink.
+func filterMatchesWithin(cmd tea.Cmd, timeout time.Duration) (list.FilterMatchesMsg, bool) {
+	if cmd == nil {
+		return nil, false
+	}
+	ch := make(chan tea.Msg, 1)
+	go func() { ch <- cmd() }()
+	select {
+	case msg := <-ch:
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, c := range batch {
+				if fm, ok := filterMatchesWithin(c, timeout); ok {
+					return fm, true
+				}
+			}
+			return nil, false
+		}
+		fm, ok := msg.(list.FilterMatchesMsg)
+		return fm, ok
+	case <-time.After(timeout):
+		return nil, false
+	}
+}
+
+// applyKeyAndDrainFilter sends msg through m.Update, then -- unlike every
+// other test in this package, which only ever needs to drain a single
+// sessionCmd-shaped (tea.Cmd -> one tea.Msg -> done) round trip -- also
+// finds and applies whatever list.FilterMatchesMsg comes back (see
+// filterMatchesWithin). This is the harness
+// TestFilteringByKeystrokeActuallyNarrowsTheDocumentList needs precisely
+// because applyFilterMatches (model.go) is itself the fix for a message
+// that previously had nowhere to go; a test driving list.Model.
+// SetFilterText directly (as the earlier, weaker
+// TestDocumentFilterMatchesOnValueNotJustLabel does) bypasses that message
+// entirely and would have stayed green even with the bug this proves fixed.
+func applyKeyAndDrainFilter(t *testing.T, m Model, msg tea.KeyMsg) Model {
+	t.Helper()
+	next, cmd := m.Update(msg)
+	m = next.(Model)
+	if fm, ok := filterMatchesWithin(cmd, 20*time.Millisecond); ok {
+		next, _ := m.Update(fm)
+		m = next.(Model)
+	}
+	return m
+}
+
+func typeIntoFilter(t *testing.T, m Model, s string) Model {
+	t.Helper()
+	m = applyKeyAndDrainFilter(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	for _, r := range s {
+		m = applyKeyAndDrainFilter(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	return m
+}
+
+// TestFilteringByKeystrokeActuallyNarrowsTheDocumentList is the reported
+// bug, reproduced exactly: a "node" property and a "version" property (the
+// real f3sctl root document has both), filtered by typing "/node" one
+// keystroke at a time through Model.Update the way a real terminal
+// delivers it -- not list.Model.SetFilterText, which sidesteps the
+// FilterMatchesMsg round trip applyFilterMatches (model.go) exists to
+// close. Before that fix, VisibleItems() still returned every row: the
+// message list.Model's own filterItems cmd produced had nowhere to land.
+func TestFilteringByKeystrokeActuallyNarrowsTheDocumentList(t *testing.T) {
+	m := newTestModel2(t, &render.RenderedDocument{
+		Title: "f3s homelab control",
+		Rows: []render.Row{
+			{Label: "apiVersion", Sublabel: "1", Kind: render.RowKindProperty},
+			{Label: "node", Sublabel: "pi0.lan.buetow.org", Kind: render.RowKindProperty},
+			{Label: "version", Sublabel: "v0.6.1", Kind: render.RowKindProperty},
+		},
+	})
+
+	m = typeIntoFilter(t, m, "node")
+
+	visible := m.document.rows.VisibleItems()
+	if len(visible) != 1 {
+		labels := make([]string, len(visible))
+		for i, it := range visible {
+			labels[i] = it.(documentRowItem).row.Label
+		}
+		t.Fatalf("VisibleItems() after typing \"node\" = %v, want exactly the node row", labels)
+	}
+	if row, ok := visible[0].(documentRowItem); !ok || row.row.Label != "node" {
+		t.Errorf("VisibleItems()[0] = %#v, want the node row", visible[0])
+	}
+}
+
+// newTestModel2 builds a Model already on the Document screen with doc as
+// its current, synced document -- everything
+// TestFilteringByKeystrokeActuallyNarrowsTheDocumentList needs and nothing
+// newTestModel/newLinkedTestModel (model_test.go/document_test.go) already
+// provide, since both are built around a fixed fixture document rather than
+// an arbitrary one a filtering test needs to control precisely.
+func newTestModel2(t *testing.T, doc *render.RenderedDocument) Model {
+	t.Helper()
+	m, _ := newTestModel()
+	m.base = screenDocument
+	m = m.applyWindowSize(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m.document = m.document.syncRows(doc)
+	return m
 }
 
 // --- Model-level integration: h/l actually drive navigation/selection ---
