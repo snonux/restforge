@@ -1,10 +1,17 @@
-// Package config persists the backends configured in restforge to a single
-// TOML file on disk -- the Go/CLI client's answer to
-// flutter/lib/services/settings_service.dart's storage half, and to
-// pebble/src/pkjs/settings.js's original design before that. See
-// internal/backend's package comment for the reasoning behind the value
-// type stored here (why a secret only ever goes in a request header); this
-// package's job is only the I/O around it.
+// Package config persists the backends configured in restforge, and the
+// shortcuts saved by internal/quick, to a single TOML file on disk -- the
+// Go/CLI client's answer to flutter/lib/services/settings_service.dart's
+// storage half, and to pebble/src/pkjs/settings.js's original design
+// before that. See internal/backend's package comment for the reasoning
+// behind the backend value type stored here (why a secret only ever goes
+// in a request header); this package's job is only the I/O around it.
+// internal/quick's own package comment carries the equivalent reasoning
+// for what a saved shortcut may remember. Both live in the same file, as a
+// top-level "backends" array of tables and a top-level "quick" array of
+// tables respectively (LoadBackends/SaveBackends and LoadQuick/SaveQuick),
+// rather than the two separate shared_preferences keys flutter's port
+// uses -- this Go client has one TOML config file, not two storage
+// backends to split across.
 //
 // Unlike flutter's split between shared_preferences (metadata) and
 // flutter_secure_storage (secrets, Android-Keystore backed), the CLI has no
