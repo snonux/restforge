@@ -38,6 +38,8 @@ check-code:
         echo "$files"; \
         exit 1; \
     fi
+    @echo "== genericity =="
+    @bash tools/check-genericity.sh
 
 # Repo-wide secret scan; the recipe itself lives in ../Justfile because the
 # three apps share one working tree and one set of keys.
