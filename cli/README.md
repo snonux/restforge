@@ -64,12 +64,11 @@ gain a TUI-driven version of that part once it is re-recorded.
 
 The TUI's Home (backend/shortcut picker), Document (rendering a fetched
 entity), Confirm (yes/no on an unsafe action), ValuePrompt (a required-field
-prompt) and Settings (backend editor) screens are implemented. The full-text
-detail view is **not yet interactive in the TUI** — that screen currently
-renders a placeholder. Until it lands, `restforge get` prints a document's
-full text unabridged either way; the underlying `internal/session`
-coordinator both the TUI and the one-shot commands share already implements
-Detail's own state, only the TUI's own screen for it is outstanding.
+prompt), Detail (a scrollable full-text reading view for a property too long
+for its row) and Settings (backend editor) screens are implemented.
+`restforge get` prints a document's full text unabridged either way; the
+underlying `internal/session` coordinator both the TUI and the one-shot
+commands share is what both now render Detail's state through.
 
 ## Requirements
 

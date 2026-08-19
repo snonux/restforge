@@ -64,13 +64,18 @@
 //     screen and Confirm decline the pending question (Session.Answer(false))
 //     on the shell's global Back key rather than defining a cancel binding
 //     of their own -- see Model.handleBack.
+//   - detail.go and detail_update.go are the Detail screen: the full-text,
+//     scrollable reading view for a session.DetailView, one
+//     bubbles/viewport.Model showing the full value a document row was too
+//     long to fit on its own line (render.DetailTarget) -- entered
+//     automatically whenever Session.Detail() is non-nil (deriveScreen,
+//     derive.go) and dismissed (Session.DismissDetail) on the shell's global
+//     Back key, the same precedence Confirm/ValuePrompt use -- see
+//     Model.handleBack, which checks Session.Detail() first since it layers
+//     over everything else.
 //
-// # What this package deliberately does not do yet
-//
-// Detail (Session.Detail()) still does nothing but name itself -- it is a
-// placeholder task 731 (see this project's task tracker) fills in. This
-// package's job is the shell around every screen -- the Model, the
+// This package's job is the shell around every screen -- the Model, the
 // navigation between screen states, the shared styles and the async pattern
-// -- plus, now, every screen that shell exists to show except Detail: Home,
-// Document, Confirm, ValuePrompt and Settings.
+// -- plus every screen that shell exists to show: Home, Document, Confirm,
+// ValuePrompt, Detail and Settings.
 package tui

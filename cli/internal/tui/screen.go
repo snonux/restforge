@@ -38,7 +38,7 @@ const (
 
 	// screenDetail is the full-text reading view for Session.Detail().
 	// Entered automatically whenever Session.Detail() is non-nil -- see
-	// deriveScreen. Filled in by task 731.
+	// deriveScreen. Rendered by detailModel (detail.go, task 731).
 	screenDetail
 
 	// screenSettings is the backend editor, reached explicitly from Home

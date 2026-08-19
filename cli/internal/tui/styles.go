@@ -40,8 +40,9 @@ var (
 	TitleStyle = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
 
 	// SubtitleStyle is secondary text directly under a TitleStyle heading:
-	// a placeholder's "not yet implemented" note today, a document's
-	// subtitle once render.RenderedDocument has one to show.
+	// Home's "Backends"/"Shortcuts" section labels (home.go) and Settings'
+	// own "Backends" label (settings_items.go) today, a document's subtitle
+	// once render.RenderedDocument has one to show.
 	SubtitleStyle = lipgloss.NewStyle().Foreground(colorMuted)
 
 	// HelpStyle is the key-binding hint line every screen shows, rendered

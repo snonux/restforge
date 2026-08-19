@@ -69,6 +69,12 @@ type Model struct {
 	// doc comment.
 	valuePrompt valuePromptModel
 
+	// detail is the Detail screen's own state -- the one bubbles/
+	// viewport.Model a session.DetailView needs (detail.go). Resynced from
+	// Session.Detail() everywhere valuePrompt resyncs from Session.Question()
+	// -- see detailModel.syncFromSession's own doc comment for why.
+	detail detailModel
+
 	showHelp bool
 	quitting bool
 
@@ -90,6 +96,7 @@ func New(sess *session.Session) Model {
 		document:    newDocumentModel(),
 		settings:    newSettingsModel(nil),
 		valuePrompt: newValuePromptModel(),
+		detail:      newDetailModel(),
 	}
 }
 
@@ -115,6 +122,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.home = m.home.resize(msg.Width, msg.Height)
 		m.document = m.document.resize(msg.Width, msg.Height)
 		m.settings = m.settings.resize(msg.Width, msg.Height)
+		m.detail = m.detail.resize(msg.Width, msg.Height)
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -129,6 +137,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// describes for a caller of its methods.
 		m.document = m.document.syncRows(m.session.Document())
 		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
+		m.detail = m.detail.syncFromSession(m.session.Detail())
 		return m, nil
 	case homeLoadedMsg:
 		m.home = m.home.applyLoaded(msg)
@@ -137,6 +146,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.base = screenDocument
 		m.document = m.document.syncRows(m.session.Document())
 		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
+		m.detail = m.detail.syncFromSession(m.session.Detail())
 		return m, nil
 	case homeQuickRanMsg:
 		m = m.applyQuickRan(msg)
@@ -147,6 +157,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// -- resync the same way sessionUpdatedMsg does, so a shortcut gets
 		// exactly the confirmation flow a hand-reached action would.
 		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
+		m.detail = m.detail.syncFromSession(m.session.Detail())
 		return m, nil
 	case settingsSavedMsg:
 		return m.applySettingsSaved(msg)
@@ -193,9 +204,9 @@ func (m Model) View() string {
 // keys.go -- before falling back to whichever screen is current. Home
 // (updateHome, home_update.go), Document (updateDocument,
 // document_update.go), Settings (updateSettings, settings_update.go),
-// Confirm (updateConfirm, confirm_update.go) and ValuePrompt
-// (updateValuePrompt, valueprompt_update.go) are the screens with their own
-// key handling so far.
+// Confirm (updateConfirm, confirm_update.go), ValuePrompt
+// (updateValuePrompt, valueprompt_update.go) and Detail (updateDetail,
+// detail_update.go) are the screens with their own key handling.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -207,14 +218,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Back):
 		m = m.handleBack()
 		// handleBack may have popped Session's own navigation stack,
-		// dismissed Detail (once task 731 sets it) or declined a pending
-		// question -- resync both the Document screen's row list and the
-		// ValuePrompt screen's input from whatever Session shows now, the
-		// same call every other Session-mutating branch in Update makes.
-		// See documentModel.syncRows's own doc comment for why this is
-		// cheap even when nothing actually changed.
+		// dismissed Detail or declined a pending question -- resync the
+		// Document screen's row list, the ValuePrompt screen's input and
+		// the Detail screen's viewport from whatever Session shows now,
+		// the same call every other Session-mutating branch in Update
+		// makes. See documentModel.syncRows's own doc comment for why
+		// this is cheap even when nothing actually changed.
 		m.document = m.document.syncRows(m.session.Document())
 		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
+		m.detail = m.detail.syncFromSession(m.session.Detail())
 		return m, nil
 	}
 	switch m.currentScreen() {
@@ -226,6 +238,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateConfirm(msg)
 	case screenValuePrompt:
 		return m.updateValuePrompt(msg)
+	case screenDetail:
+		return m.updateDetail(msg)
 	case screenSettings:
 		return m.updateSettings(msg)
 	}
@@ -285,14 +299,14 @@ func (m Model) currentScreen() screen {
 
 // currentScreenView renders the current screen's body: Home's own view
 // (home.go), Document's own view (document.go), Confirm's own view
-// (confirm.go), ValuePrompt's own view (valueprompt.go) and Settings' own
-// view (settings.go) once one of them is current, renderPlaceholder for
-// Detail, the one screen still pending -- see screen.go for which task
-// fills it in. Grown one case at a time as each screen task lands, rather
-// than a closed switch with a default-panics canary (render.RowTarget and
-// session.SessionQuestion's own convention): unlike those, "not yet
-// implemented" is this switch's deliberate, temporary default for Detail,
-// not a bug.
+// (confirm.go), ValuePrompt's own view (valueprompt.go), Detail's own view
+// (detail.go) and Settings' own view (settings.go). Every screen constant
+// screen.go declares now has a case here, so -- unlike while Detail was
+// still a placeholder task 731 had yet to fill in -- this is a closed switch
+// with a default-panics canary, the same convention render.RowTarget and
+// session.SessionQuestion's own switches follow: a screen constant added
+// later with a forgotten case here fails loudly the first time that screen
+// is reached, instead of silently rendering nothing.
 func (m Model) currentScreenView() string {
 	switch m.currentScreen() {
 	case screenHome:
@@ -303,23 +317,26 @@ func (m Model) currentScreenView() string {
 		return confirmView(m.confirmQuestion())
 	case screenValuePrompt:
 		return m.valuePrompt.View(m.valueQuestion())
+	case screenDetail:
+		return m.detail.View(m.detailView())
 	case screenSettings:
 		return m.settings.View()
+	default:
+		panic(fmt.Sprintf("tui: unreachable screen %v", m.currentScreen()))
 	}
-	return renderPlaceholder(m.currentScreen())
 }
 
-// confirmQuestion and valueQuestion re-assert Session.Question() to the
-// concrete type deriveScreen already established when it picked
-// screenConfirm/screenValuePrompt as current -- panicking, rather than
-// falling back to a placeholder, on a mismatch: deriveScreen and this
-// switch must always agree on what session.SessionQuestion's dynamic type
-// means, so disagreement is this package's own bug, not a state a caller
-// can hit by pressing the wrong key. Mirrors the default-panics-as-canary
-// convention every switch over a closed interface in this codebase follows
-// (see internal/action/ask.go's AskOutcome doc comment) -- split into two
-// small helpers, rather than inlined in currentScreenView, so each stays a
-// one-line call at its use site.
+// confirmQuestion, valueQuestion and detailView re-assert Session.Question()/
+// Session.Detail() to the concrete type or value deriveScreen already
+// established when it picked screenConfirm/screenValuePrompt/screenDetail as
+// current -- panicking on a mismatch: deriveScreen and this switch must
+// always agree on what session.SessionQuestion's dynamic type (or
+// Session.Detail's nilness) means, so disagreement is this package's own
+// bug, not a state a caller can hit by pressing the wrong key. Mirrors the
+// default-panics-as-canary convention every switch over a closed interface
+// in this codebase follows (see internal/action/ask.go's AskOutcome doc
+// comment) -- split into three small helpers, rather than inlined in
+// currentScreenView, so each stays a one-line call at its use site.
 func (m Model) confirmQuestion() session.ConfirmQuestion {
 	q, ok := m.session.Question().(session.ConfirmQuestion)
 	if !ok {
@@ -336,11 +353,10 @@ func (m Model) valueQuestion() session.ValueQuestion {
 	return q
 }
 
-// renderPlaceholder is what every screen shows until its own task lands:
-// its name, styled through TitleStyle exactly as a real screen's heading
-// will be, so swapping this out for the real thing changes only the body
-// below the title.
-func renderPlaceholder(s screen) string {
-	return TitleStyle.Render(s.String()) + "\n" +
-		SubtitleStyle.Render("not yet implemented")
+func (m Model) detailView() session.DetailView {
+	d := m.session.Detail()
+	if d == nil {
+		panic("tui: screenDetail current but Detail() is nil")
+	}
+	return *d
 }
