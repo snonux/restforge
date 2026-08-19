@@ -29,12 +29,34 @@ type sessionUpdatedMsg struct{}
 //     Update is a frozen terminal.
 //   - So a screen wraps the call in a fn passed to sessionCmd, and returns
 //     the resulting tea.Cmd from Update instead of calling fn directly. The
-//     Bubble Tea runtime runs the returned tea.Cmd on its own goroutine;
-//     fn's mutation of Session happens there, off Update's goroutine, and
-//     the sessionUpdatedMsg it returns is delivered back to Update once fn
-//     has returned -- Update (and so View, which only ever runs between
-//     Update calls, never concurrently with one) is never blocked and
-//     never touches Session while fn is still running.
+//     Bubble Tea runtime runs the returned tea.Cmd on its own goroutine
+//     (bubbletea's handleCommands does a bare `go func() { p.Send(cmd())
+//     }()` per command and does not wait for it), so fn's mutation of
+//     Session happens off Update's goroutine, and the sessionUpdatedMsg it
+//     returns is delivered back to Update once fn has returned.
+//
+// # View runs concurrently with fn, not just with Update
+//
+// The above keeps Update itself from ever blocking, but it does NOT mean
+// View is safe from fn while fn is still running. eventLoop calls View
+// again on every message it processes (resize, a tick, a keypress, ...),
+// and it keeps doing that on its own goroutine while a still-running
+// sessionCmd goroutine is off mutating *Session (and, through it, *nav.Nav)
+// on a different one -- there is no rendezvous between them until fn's
+// result message arrives. A screen's View reading Session.Document/State/
+// Failure/Detail/Question/Notice/IsLive is therefore a genuine data race
+// against whichever cmd goroutine is currently running, for as long as any
+// sessionCmd (or the liveTickMsg handling below) is in flight -- which,
+// for a slow backend or a still-running watch, is a real, not
+// theoretical, window. This is why internal/session.Session and
+// internal/nav.Nav each guard their own fields with a sync.RWMutex --
+// Update/View take the read lock through the ordinary accessors, and every
+// mutating method (called from a cmd goroutine) takes the write lock only
+// around the field writes themselves, never across the HTTP call that
+// produces the new value -- so a render mid-fetch sees either the old,
+// fully-consistent state or the new one, never a torn read, and the
+// terminal keeps redrawing (a loading state, a live spinner) throughout
+// the request instead of freezing for its duration.
 //
 // Typical use, once a screen has a row's target in hand:
 //
@@ -48,33 +70,23 @@ type sessionUpdatedMsg struct{}
 // sessionUpdatedMsg's empty payload -- sessionCmd only covers the common,
 // payload-free case.
 //
-// # What sessionCmd does not solve
+// # The live-timer hazard, and how it is funnelled through this same shape
 //
 // internal/live's watch (started inside Session.Activate/Answer/
 // AnswerValue whenever an action's response is watchable) keeps running
-// after the sessionCmd call that started it returns: its own background
-// timer fires later, on its own goroutine, and directly mutates Session's
-// notice field through the Handlers Session registered with it (see
-// internal/session's package comment, "Live watches and the two callers").
-// That mutation does not go through sessionCmd or arrive as a
-// sessionUpdatedMsg at all -- it is a second, independent source of
-// concurrent access to the same *Session this Model holds, and is exactly
-// the hazard internal/session's package comment flags as unsolved by that
-// package and left to internal/tui. It is still unsolved here: both
-// activateDocumentSelection (document_update.go, a safe-method action
-// invoked straight through Session.Activate) and updateConfirm/
-// updateValuePrompt's calls into Session.Answer/AnswerValue
-// (confirm_update.go, valueprompt_update.go, task 631) can reach a
-// watchable outcome and so can already start a callback watch today,
-// whether or not any screen renders what it reports. The live-progress
-// banner (task 831, which depends on internal/live via Session and is the
-// first screen to actually read Session.IsLive/Notice on a poll's behalf)
-// is where this must be adapted -- for example by giving internal/live's
-// Live a createTimer that posts a
-// tea.Msg to the running tea.Program instead of firing its callback
-// directly on a bare timer goroutine, so the mutation is funnelled back
-// through Update the same way sessionCmd funnels an ordinary request/
-// response round trip.
+// after the sessionCmd call that started it returns: its own poll timer
+// fires later, on its own goroutine. Left alone, that would be a second,
+// independent, *unfunnelled* source of concurrent access to Session --
+// exactly the hazard internal/session's package comment flags as left to
+// internal/tui to solve. live_cmd.go solves it by giving internal/live's
+// Live a createTimer that, instead of invoking the poll callback directly
+// on the timer's own goroutine, posts a liveTickMsg to the running
+// *tea.Program; Update receives that like any other message and hands the
+// callback to handleLiveTick, which wraps it in this same sessionCmd --
+// see live_cmd.go and run.go's programSender. So every mutation of
+// Session, including a live watch's, now goes through a sessionCmd
+// goroutine one way or another, and is safe against a concurrent View for
+// the reason above: Session's own mutex, not the goroutine boundary alone.
 func sessionCmd(fn func()) tea.Cmd {
 	return func() tea.Msg {
 		fn()

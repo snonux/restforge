@@ -45,6 +45,18 @@
 // completes. There is no pub-sub layer here; Bubble Tea's own message loop
 // already gives every caller the state after each operation.
 //
+// No observer pattern is not the same as no synchronization, though: a
+// Bubble Tea caller's own render goroutine can call these accessors while a
+// mutating method is still running on a different goroutine (bubbletea runs
+// each tea.Cmd on its own goroutine and keeps calling View while it is in
+// flight -- see internal/tui/cmd.go's package comment for the concrete
+// mechanism). Nav's own sync.RWMutex guards every field for exactly that
+// reason: a mutating method takes the write lock only around its actual
+// field writes, never across the HTTP call in between, so a concurrent
+// accessor call sees a consistent snapshot -- the state before the call, or
+// the state after -- never a torn read, and rendering is never blocked for
+// the duration of a fetch.
+//
 // # What this package does not own
 //
 // Left to their own packages exactly as nav_service.dart's own module

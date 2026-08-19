@@ -64,6 +64,17 @@
 // triggers, since that refresh is exactly the moment the notice it just set
 // is meant to be seen next to.
 //
+// Session's own sync.RWMutex guards detail/question/notice/
+// pendingActionLabel for the same reason internal/nav.Nav's mutex guards
+// its fields (see that package's comment): "no observer pattern" describes
+// the absence of a notification mechanism, not an absence of concurrent
+// access. A Bubble Tea caller's render goroutine can read Detail/Question/
+// Notice while a method that writes them is still running on a cmd
+// goroutine (internal/tui/cmd.go's package comment has the mechanism); the
+// lock is taken only around the field writes themselves, never across a
+// call into nav/action/live, so a concurrent read is never blocked for the
+// duration of a request.
+//
 // # Live watches and the two callers
 //
 // internal/live's Handlers (OnProgress/OnDone/OnGiveUp) are invoked

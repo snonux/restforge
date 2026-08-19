@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/snonux/restforge/cli/internal/action"
 	"github.com/snonux/restforge/cli/internal/backend"
@@ -27,6 +28,16 @@ type Session struct {
 	nav     *nav.Nav
 	actions *action.Action
 	live    *live.Live
+
+	// mu guards detail/question/notice/pendingActionLabel below -- the
+	// overlay state this package owns itself, as opposed to nav's own
+	// State/Document/Failure (which nav.Nav's own mutex already guards) or
+	// live's IsLive (which live.Live's own mutex already guards). It exists
+	// for the same reason nav.Nav's mu does: a caller's cmd goroutine (see
+	// internal/tui/cmd.go's sessionCmd) mutates these fields while that
+	// caller's render goroutine may be reading them through Detail/
+	// Question/Notice at the same time.
+	mu sync.RWMutex
 
 	detail   *DetailView
 	question SessionQuestion
@@ -78,15 +89,27 @@ func (s *Session) CanGoBack() bool { return s.nav.CanGoBack() }
 
 // Detail is a value opened for full reading by Activate, or nil. See
 // DismissDetail.
-func (s *Session) Detail() *DetailView { return s.detail }
+func (s *Session) Detail() *DetailView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.detail
+}
 
 // Question is the question currently awaiting Answer or AnswerValue, or
 // nil.
-func (s *Session) Question() SessionQuestion { return s.question }
+func (s *Session) Question() SessionQuestion {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.question
+}
 
 // Notice is what the last action (or the job it started) produced, or nil.
 // See DismissNotice.
-func (s *Session) Notice() SessionNotice { return s.notice }
+func (s *Session) Notice() SessionNotice {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.notice
+}
 
 // IsLive reports whether a job is currently being watched. See
 // live.Live.IsLive.
@@ -112,7 +135,9 @@ func (s *Session) OpenBackend(be backend.Backend) {
 func (s *Session) Activate(target render.RowTarget) {
 	switch t := target.(type) {
 	case render.DetailTarget:
+		s.mu.Lock()
 		s.detail = &DetailView{Heading: t.Heading, Body: t.Body}
+		s.mu.Unlock()
 	case render.FetchTarget:
 		// Mirrors nav.js's fetch(href, title, false): navigating somewhere
 		// new means whatever was being watched belonged to the screen being
@@ -158,13 +183,17 @@ func (s *Session) Refresh() {
 // caller showing Detail as a modal needs an explicit way to close it that
 // is not also a Back.
 func (s *Session) DismissDetail() {
+	s.mu.Lock()
 	s.detail = nil
+	s.mu.Unlock()
 }
 
 // DismissNotice clears Notice once a caller has shown it. See DismissDetail;
 // the same reasoning applies.
 func (s *Session) DismissNotice() {
+	s.mu.Lock()
 	s.notice = nil
+	s.mu.Unlock()
 }
 
 // clearTransient clears whatever is laid on top of Document -- Detail,
@@ -176,10 +205,12 @@ func (s *Session) DismissNotice() {
 // outcome triggers.
 func (s *Session) clearTransient() {
 	s.actions.CancelPending()
+	s.mu.Lock()
 	s.detail = nil
 	s.question = nil
 	s.notice = nil
 	s.pendingActionLabel = ""
+	s.mu.Unlock()
 }
 
 // currentEntity returns the document on screen as a non-nil value plus

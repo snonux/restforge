@@ -1,6 +1,8 @@
 package nav
 
 import (
+	"sync"
+
 	"github.com/snonux/restforge/cli/internal/backend"
 	"github.com/snonux/restforge/cli/internal/failure"
 	"github.com/snonux/restforge/cli/internal/httpclient"
@@ -29,6 +31,13 @@ type httpGetter interface {
 type Nav struct {
 	http httpGetter
 
+	// mu guards every field below. It exists because a caller's cmd
+	// goroutine (see internal/tui/cmd.go's sessionCmd) mutates these fields
+	// while that same caller's render goroutine may be reading them through
+	// the accessors below at the same time -- see the package comment's "No
+	// observer pattern" section for why that is a real, not theoretical,
+	// concurrent access.
+	mu      sync.RWMutex
 	stack   []frame
 	current backend.Backend
 	state   DocumentState
@@ -49,6 +58,8 @@ func New(client httpGetter) *Nav {
 // the moment it sends a request, not whichever one was current when it
 // first asked.
 func (n *Nav) Backend() backend.Backend {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.current
 }
 
@@ -56,12 +67,16 @@ func (n *Nav) Backend() backend.Backend {
 // this never changes for a loading fetch or a failed one -- only State and
 // Failure do.
 func (n *Nav) State() DocumentState {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.state
 }
 
 // Failure is why State is StateError or StateUnreachable. nil whenever
 // State is StateOK or StateLoading.
 func (n *Nav) Failure() *failure.Failure {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.failure
 }
 
@@ -71,6 +86,8 @@ func (n *Nav) Failure() *failure.Failure {
 // backend and before its root has landed -- there is nothing to keep
 // showing at that point because nothing has been shown yet.
 func (n *Nav) Document() *render.RenderedDocument {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	if len(n.stack) == 0 {
 		return nil
 	}
@@ -84,6 +101,8 @@ func (n *Nav) Document() *render.RenderedDocument {
 // what internal/live needs to match a poll target against. nil under the
 // same conditions Document is.
 func (n *Nav) Entity() *siren.Entity {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	if len(n.stack) == 0 {
 		return nil
 	}
@@ -95,6 +114,8 @@ func (n *Nav) Entity() *siren.Entity {
 // that arrived embedded rather than linked, or before anything is open --
 // same nullability as frame.href, and added for the same reason as Entity.
 func (n *Nav) Href() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	if len(n.stack) == 0 {
 		return ""
 	}
@@ -108,5 +129,7 @@ func (n *Nav) Href() string {
 // through to the picker frame at that point, minus the picker itself (out
 // of scope here -- see the package comment).
 func (n *Nav) CanGoBack() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return len(n.stack) > 1
 }

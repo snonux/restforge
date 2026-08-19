@@ -16,14 +16,18 @@ import (
 // another server's name -- mirrors the same reasoning in nav.js's
 // openBackend.
 func (n *Nav) OpenRoot(be backend.Backend) {
+	n.mu.Lock()
 	n.stack = nil
 	n.current = be
 	n.state = StateLoading
 	n.failure = nil
+	n.mu.Unlock()
 
 	resp, err := n.http.Get(be, be.BaseURL)
 	if err != nil {
-		n.applyFailure(err)
+		n.mu.Lock()
+		n.applyFailureLocked(err)
+		n.mu.Unlock()
 		return
 	}
 
@@ -33,12 +37,16 @@ func (n *Nav) OpenRoot(be backend.Backend) {
 	// something it would otherwise display confidently and wrongly --
 	// mirrors the siren.versionProblem check in fetchRoot.
 	if problem := entity.VersionProblem(); problem != "" {
+		n.mu.Lock()
 		n.state = StateError
 		n.failure = &failure.Failure{Kind: failure.Client, Message: problem}
+		n.mu.Unlock()
 		return
 	}
 
-	n.push(entity, be.BaseURL, be.Name)
+	n.mu.Lock()
+	n.pushLocked(entity, be.BaseURL, be.Name)
+	n.mu.Unlock()
 	n.followStart(be, entity)
 }
 
@@ -76,6 +84,8 @@ func (n *Nav) Fetch(href, title string) {
 // whatever screen opened this one, rather than into a history nobody
 // walked.
 func (n *Nav) Adopt(be backend.Backend) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.stack = nil
 	n.current = be
 	n.state = StateOK
@@ -89,15 +99,19 @@ func (n *Nav) Adopt(be backend.Backend) {
 // not a failure, so it does not touch State/Failure either, it is simply a
 // no-op past clearing whatever error was already on screen.
 func (n *Nav) Refresh() {
+	n.mu.Lock()
 	if len(n.stack) == 0 {
+		n.mu.Unlock()
 		return
 	}
 	here := n.stack[len(n.stack)-1]
 	if here.href == "" {
 		n.state = StateOK
 		n.failure = nil
+		n.mu.Unlock()
 		return
 	}
+	n.mu.Unlock()
 	n.fetch(here.href, here.title, true)
 }
 
@@ -107,6 +121,8 @@ func (n *Nav) Refresh() {
 // mirrors openEmbedded in nav.js. Out-of-range or before anything is open,
 // index is simply ignored: there is nothing there to open.
 func (n *Nav) OpenEmbedded(index int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	if len(n.stack) == 0 {
 		return
 	}
@@ -115,7 +131,7 @@ func (n *Nav) OpenEmbedded(index int) {
 		return
 	}
 	child := entities[index]
-	n.push(child, child.Follow("self"), child.Label())
+	n.pushLocked(child, child.Follow("self"), child.Label())
 }
 
 // Back pops one document. A no-op at the backend's root -- see CanGoBack.
@@ -123,7 +139,12 @@ func (n *Nav) OpenEmbedded(index int) {
 // through to the picker below the root does not carry over here (out of
 // scope -- see the package comment).
 func (n *Nav) Back() {
-	if !n.CanGoBack() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	// Inlined rather than calling CanGoBack: that accessor takes its own
+	// read lock, which would deadlock against the write lock already held
+	// here (sync.RWMutex is not reentrant).
+	if len(n.stack) <= 1 {
 		return
 	}
 	last := len(n.stack) - 1
@@ -148,16 +169,27 @@ func (n *Nav) Back() {
 // there before this call, which is precisely the invariant this package
 // exists to protect -- see the package comment.
 func (n *Nav) fetch(href, title string, replace bool) {
+	n.mu.Lock()
 	n.state = StateLoading
 	n.failure = nil
+	current := n.current
+	n.mu.Unlock()
 
-	resp, err := n.http.Get(n.current, href)
+	// The HTTP round trip runs with the lock released -- see the package's
+	// mu doc comment -- so a concurrent View render keeps reading whatever
+	// State/Document this call has committed so far (StateLoading, and the
+	// last-good Document beneath it) instead of blocking for the duration
+	// of the request.
+	resp, err := n.http.Get(current, href)
 	if err != nil {
-		n.applyFailure(err)
+		n.mu.Lock()
+		n.applyFailureLocked(err)
+		n.mu.Unlock()
 		return
 	}
 
 	entity := siren.EntityFromJSON(resp.Entity)
+	n.mu.Lock()
 	if replace && len(n.stack) > 0 {
 		n.stack[len(n.stack)-1] = frame{entity: entity, href: href, title: title}
 	} else {
@@ -165,22 +197,24 @@ func (n *Nav) fetch(href, title string, replace bool) {
 	}
 	n.state = StateOK
 	n.failure = nil
+	n.mu.Unlock()
 }
 
-// push appends entity onto the stack and marks it the new current document.
-func (n *Nav) push(entity siren.Entity, href, title string) {
+// pushLocked appends entity onto the stack and marks it the new current
+// document. Caller must hold n.mu.
+func (n *Nav) pushLocked(entity siren.Entity, href, title string) {
 	n.stack = append(n.stack, frame{entity: entity, href: href, title: title})
 	n.state = StateOK
 	n.failure = nil
 }
 
-// applyFailure records err as the reason the last fetch did not land,
+// applyFailureLocked records err as the reason the last fetch did not land,
 // mapping its Kind onto a DocumentState via StateFor. httpGetter.Get always
 // returns a *failure.Failure on error (see httpclient's package comment);
 // the type-assertion fallback exists only so a hand-rolled test double that
 // returns a plain error still degrades to something sensible rather than
-// panicking.
-func (n *Nav) applyFailure(err error) {
+// panicking. Caller must hold n.mu.
+func (n *Nav) applyFailureLocked(err error) {
 	f, ok := err.(*failure.Failure)
 	if !ok {
 		f = &failure.Failure{Kind: failure.Client, Message: err.Error()}

@@ -21,15 +21,25 @@ func (s *Session) askAction(name string) {
 		return
 	}
 	be := s.nav.Backend()
-	s.pendingActionLabel = actionLabel(entity, name)
+	label := actionLabel(entity, name)
+	s.mu.Lock()
+	s.pendingActionLabel = label
+	s.mu.Unlock()
 
+	// s.actions.Ask does I/O for a confirmable action's own request (it may
+	// pre-check state); it runs with s.mu released, same as every other
+	// call into nav/actions/live in this file -- see nav's fetch for why.
 	outcome := s.actions.Ask(be, entity, name)
 	switch o := outcome.(type) {
 	case action.ActionNotOffered:
+		s.mu.Lock()
 		s.question = nil
 		s.notice = ActionWithdrawn{Heading: o.Name}
+		s.mu.Unlock()
 	case action.ConfirmationRequired:
+		s.mu.Lock()
 		s.question = ConfirmQuestion{Heading: o.Heading, Body: o.Body}
+		s.mu.Unlock()
 	case action.ActionInvoked:
 		s.applyInvokeOutcome(o.Outcome, entity, be)
 	default:
@@ -57,12 +67,16 @@ func actionLabel(entity siren.Entity, name string) string {
 func (s *Session) Answer(confirmed bool) {
 	entity, ok := s.currentEntity()
 	if !ok {
+		s.mu.Lock()
 		s.question = nil
+		s.mu.Unlock()
 		return
 	}
 	be := s.nav.Backend()
 	outcome := s.actions.Answer(confirmed, be, entity)
+	s.mu.Lock()
 	s.question = nil
+	s.mu.Unlock()
 	if outcome == nil {
 		// Declined, or the question was already superseded -- both are
 		// "nothing to do", not an error, mirroring action.Answer's own
@@ -77,12 +91,16 @@ func (s *Session) Answer(confirmed bool) {
 func (s *Session) AnswerValue(text string) {
 	entity, ok := s.currentEntity()
 	if !ok {
+		s.mu.Lock()
 		s.question = nil
+		s.mu.Unlock()
 		return
 	}
 	be := s.nav.Backend()
 	outcome := s.actions.AnswerValue(text, be, entity)
+	s.mu.Lock()
 	s.question = nil
+	s.mu.Unlock()
 	if outcome == nil {
 		return
 	}
@@ -97,10 +115,14 @@ func (s *Session) AnswerValue(text string) {
 func (s *Session) applyInvokeOutcome(outcome action.InvokeOutcome, originEntity siren.Entity, be backend.Backend) {
 	switch o := outcome.(type) {
 	case action.InvokeRefused:
+		s.mu.Lock()
 		s.notice = ActionRefused{Heading: s.pendingActionLabel, Reason: o.Reason}
+		s.mu.Unlock()
 	case action.InvokeNeedsValue:
 		// Still pending -- now awaiting a value instead of a yes/no.
+		s.mu.Lock()
 		s.question = ValueQuestion{Label: o.Label}
+		s.mu.Unlock()
 	case action.InvokeSucceeded:
 		s.handleSuccess(o.Response, originEntity, be)
 	case action.InvokeFailed:
@@ -117,13 +139,16 @@ func (s *Session) applyInvokeOutcome(outcome action.InvokeOutcome, originEntity 
 // against "do not claim a job finished" when it plainly has not.
 func (s *Session) handleSuccess(response httpclient.HTTPResponse, originEntity siren.Entity, be backend.Backend) {
 	resultEntity := siren.EntityFromJSON(response.Entity)
+
+	s.mu.Lock()
+	label := s.pendingActionLabel
 	s.notice = ActionOutcomeReported{
-		Heading: s.pendingActionLabel,
+		Heading: label,
 		Message: live.ResultText(resultEntity, response.Status),
 		Body:    describeResult(resultEntity, response.Status),
 	}
+	s.mu.Unlock()
 
-	label := s.pendingActionLabel
 	started := s.live.Start(be,
 		live.Origin{Entity: originEntity, Href: s.nav.Href()},
 		live.ActionOutcome{Status: response.Status, Entity: resultEntity},
@@ -149,7 +174,9 @@ func (s *Session) handleSuccess(response httpclient.HTTPResponse, originEntity s
 // tells us nothing new about the document, and re-fetching would only fail
 // the same way or silently paper over a question that is still real.
 func (s *Session) handleFailure(f *failure.Failure) {
+	s.mu.Lock()
 	s.notice = ActionFailed{Heading: s.pendingActionLabel, Failure: f}
+	s.mu.Unlock()
 	if f.Kind == failure.Conflict {
 		s.nav.Refresh()
 	}
@@ -161,7 +188,9 @@ func (s *Session) handleFailure(f *failure.Failure) {
 // coordinator just sets the notice kind + string, so a property-name change
 // on the server drifts against the watch logic in one place, not two.
 func (s *Session) onLiveProgress(label string, entity siren.Entity) {
+	s.mu.Lock()
 	s.notice = ActionProgress{Heading: label, Step: live.ProgressText(entity)}
+	s.mu.Unlock()
 }
 
 // onLiveDone is the job-stopped branch. Mirrors liveHandlers.onDone: the
@@ -171,11 +200,13 @@ func (s *Session) onLiveProgress(label string, entity siren.Entity) {
 // just sets the notice), so neither the job-state vocabulary nor the
 // property rendering lives here.
 func (s *Session) onLiveDone(label string, entity siren.Entity) {
+	s.mu.Lock()
 	s.notice = ActionOutcomeReported{
 		Heading: label,
 		Message: live.DoneText(entity),
 		Body:    render.Describe(entity),
 	}
+	s.mu.Unlock()
 	s.nav.Refresh()
 }
 
@@ -184,7 +215,9 @@ func (s *Session) onLiveDone(label string, entity siren.Entity) {
 // stopped asking -- and the document is still re-fetched, because whatever
 // the action changed before this app gave up watching is still worth seeing.
 func (s *Session) onLiveGiveUp(label string) {
+	s.mu.Lock()
 	s.notice = ActionGaveUp{Heading: label}
+	s.mu.Unlock()
 	s.nav.Refresh()
 }
 
