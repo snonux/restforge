@@ -21,7 +21,8 @@ const (
 	// screenDocument renders Session.Document's rows for whichever
 	// backend/href is currently open, with Session.State/Session.Failure
 	// overlaid on top without replacing the last-good document -- mirrors
-	// flutter/lib/screens/document_screen.dart. Filled in by task 531.
+	// flutter/lib/screens/document_screen.dart. Rendered by documentModel
+	// (document.go, task 531).
 	screenDocument
 
 	// screenConfirm is the yes/no modal for a session.ConfirmQuestion.

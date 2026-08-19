@@ -39,6 +39,14 @@ type Model struct {
 	// program's lifetime, not one per visit.
 	home homeModel
 
+	// document is the Document screen's own state -- the row list built
+	// from Session.Document (see document.go). Resynced from Session
+	// whenever Update handles a message that may have changed it
+	// (sessionUpdatedMsg, homeOpenedMsg, homeQuickRanMsg, the global Back
+	// key) -- see each of those cases below and documentModel.syncRows's
+	// own doc comment for why that resync is cheap to call unconditionally.
+	document documentModel
+
 	showHelp bool
 	quitting bool
 
@@ -52,11 +60,12 @@ type Model struct {
 // it either.
 func New(sess *session.Session) Model {
 	return Model{
-		session: sess,
-		base:    screenHome,
-		keys:    newKeyMap(),
-		help:    help.New(),
-		home:    newHomeModel(),
+		session:  sess,
+		base:     screenHome,
+		keys:     newKeyMap(),
+		help:     help.New(),
+		home:     newHomeModel(),
+		document: newDocumentModel(),
 	}
 }
 
@@ -80,25 +89,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.help.Width = msg.Width
 		m.home = m.home.resize(msg.Width, msg.Height)
+		m.document = m.document.resize(msg.Width, msg.Height)
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	case sessionUpdatedMsg:
 		// The tea.Cmd that just finished already mutated m.session in
 		// place (see sessionCmd) -- there is nothing further to apply
-		// here. Update still gets this message so Bubble Tea re-renders:
-		// View always re-reads m.session fresh, the same "no cached
-		// copy" contract internal/session's own package comment
+		// here beyond resyncing the Document screen's own row list (see
+		// documentModel.syncRows's own doc comment) from whatever Session
+		// now holds. Update still gets this message so Bubble Tea
+		// re-renders: View always re-reads m.session fresh, the same "no
+		// cached copy" contract internal/session's own package comment
 		// describes for a caller of its methods.
+		m.document = m.document.syncRows(m.session.Document())
 		return m, nil
 	case homeLoadedMsg:
 		m.home = m.home.applyLoaded(msg)
 		return m, nil
 	case homeOpenedMsg:
 		m.base = screenDocument
+		m.document = m.document.syncRows(m.session.Document())
 		return m, nil
 	case homeQuickRanMsg:
-		return m.applyQuickRan(msg), nil
+		m = m.applyQuickRan(msg)
+		m.document = m.document.syncRows(m.session.Document())
+		return m, nil
 	}
 	return m, nil
 }
@@ -120,11 +136,12 @@ func (m Model) View() string {
 }
 
 // handleKey applies the three global bindings every screen shares -- see
-// keys.go -- before falling back to whichever screen is current. Home is
-// the only screen with its own key handling so far (updateHome,
-// home_update.go); a screen-specific key for one of the screens still
-// pending (Confirm's yes/no, ValuePrompt's submit, and so on) is that
-// screen's own task to add to this same fallback.
+// keys.go -- before falling back to whichever screen is current. Home
+// (updateHome, home_update.go) and Document (updateDocument,
+// document_update.go) are the two screens with their own key handling so
+// far; a screen-specific key for one of the screens still pending
+// (Confirm's yes/no, ValuePrompt's submit, and so on) is that screen's own
+// task to add to this same fallback.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -134,10 +151,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = !m.showHelp
 		return m, nil
 	case key.Matches(msg, m.keys.Back):
-		return m.handleBack(), nil
+		m = m.handleBack()
+		// handleBack may have popped Session's own navigation stack (or
+		// dismissed Detail, once task 731 sets it) -- resync the Document
+		// screen's row list from whatever Session shows now, the same
+		// call every other Session-mutating branch in Update makes. See
+		// documentModel.syncRows's own doc comment for why this is cheap
+		// even when nothing actually changed (Detail dismissed, or
+		// nothing left to pop).
+		m.document = m.document.syncRows(m.session.Document())
+		return m, nil
 	}
-	if m.currentScreen() == screenHome {
+	switch m.currentScreen() {
+	case screenHome:
 		return m.updateHome(msg)
+	case screenDocument:
+		return m.updateDocument(msg)
 	}
 	return m, nil
 }
@@ -173,15 +202,19 @@ func (m Model) currentScreen() screen {
 }
 
 // currentScreenView renders the current screen's body: Home's own view
-// (home.go) once it is current, renderPlaceholder for every screen still
-// pending -- see screen.go for which task fills each one in. Grown one case
-// at a time as each screen task lands, rather than a closed switch with a
-// default-panics canary (render.RowTarget and session.SessionQuestion's own
-// convention): unlike those, "not yet implemented" is this switch's
-// deliberate, temporary default for the screens beyond Home, not a bug.
+// (home.go) and Document's own view (document.go) once either is current,
+// renderPlaceholder for every screen still pending -- see screen.go for
+// which task fills each one in. Grown one case at a time as each screen
+// task lands, rather than a closed switch with a default-panics canary
+// (render.RowTarget and session.SessionQuestion's own convention): unlike
+// those, "not yet implemented" is this switch's deliberate, temporary
+// default for the screens beyond Home and Document, not a bug.
 func (m Model) currentScreenView() string {
-	if m.currentScreen() == screenHome {
+	switch m.currentScreen() {
+	case screenHome:
 		return m.home.View()
+	case screenDocument:
+		return m.document.View(m.session)
 	}
 	return renderPlaceholder(m.currentScreen())
 }
