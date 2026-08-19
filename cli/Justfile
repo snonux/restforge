@@ -1,0 +1,65 @@
+# =============================================
+# RESTForge — Go/Charm terminal client
+#
+# The third RESTForge implementation, alongside ../pebble and ../flutter. See
+# AGENTS.md for the workflow and ../README.md for how the three relate.
+# =============================================
+
+default:
+    @just --list
+
+# ─────────────────────────────────────────────
+# Development
+# ─────────────────────────────────────────────
+
+# Run the TUI from source
+run:
+    go run ./cmd/restforge
+
+# ─────────────────────────────────────────────
+# Tests and checks
+# ─────────────────────────────────────────────
+
+# The unit tests. No terminal or network needed.
+test:
+    go test ./...
+
+# Everything that has to pass before a commit.
+check: check-secrets check-code
+
+# go vet plus gofmt, without the repo-wide secret scan. Split out so the root
+# Justfile can scan the working tree once and then run each app's own checks,
+# rather than scanning three times over.
+check-code:
+    go vet ./...
+    @echo "== gofmt =="
+    @files=$(gofmt -l .); \
+    if [ -n "$files" ]; then \
+        echo "$files"; \
+        exit 1; \
+    fi
+
+# Repo-wide secret scan; the recipe itself lives in ../Justfile because the
+# three apps share one working tree and one set of keys.
+check-secrets:
+    @just -f ../Justfile check-secrets
+
+# ─────────────────────────────────────────────
+# Build
+# ─────────────────────────────────────────────
+
+# Build the restforge binary into bin/
+build:
+    go build -o bin/restforge ./cmd/restforge
+
+# Build and install restforge into $GOBIN (or $GOPATH/bin)
+install:
+    go install ./cmd/restforge
+
+# ─────────────────────────────────────────────
+# Maintenance
+# ─────────────────────────────────────────────
+
+clean:
+    rm -rf bin/
+    go clean

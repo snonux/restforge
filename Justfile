@@ -1,12 +1,14 @@
 # =============================================
 # RESTForge — root Justfile
 #
-# Two apps, one repository: pebble/ (the Pebble watchapp) and flutter/ (the
-# Android app). Each owns its own Justfile and its own toolchain; this one
-# forwards to them and owns the one check that has to see both at once.
+# Three apps, one repository: pebble/ (the Pebble watchapp), flutter/ (the
+# Android app) and cli/ (the Go/Charm terminal client). Each owns its own
+# Justfile and its own toolchain; this one forwards to them and owns the one
+# check that has to see all three at once.
 #
 #   just pebble dev        →  cd pebble  && just dev
 #   just flutter test      →  cd flutter && just test
+#   just cli run           →  cd cli     && just run
 #
 # See README.md for what is what.
 # =============================================
@@ -22,17 +24,23 @@ pebble *args:
 flutter *args:
     @just -f flutter/Justfile {{args}}
 
-# Everything both apps have to pass before a commit. The secret scan runs once,
-# here, because it already covers the whole working tree; each app then runs
-# only the checks that are about its own code.
+# Forward a recipe to the Go/Charm terminal client, e.g. `just cli test`
+cli *args:
+    @just -f cli/Justfile {{args}}
+
+# Everything all three apps have to pass before a commit. The secret scan runs
+# once, here, because it already covers the whole working tree; each app then
+# runs only the checks that are about its own code.
 check: check-secrets
     @just -f pebble/Justfile check-code
     @just -f flutter/Justfile check-code
+    @just -f cli/Justfile check-code
 
-# Both test suites. Neither needs an emulator.
+# All three test suites. None needs an emulator or a device.
 test:
     @just -f pebble/Justfile test
     @just -f flutter/Justfile test
+    @just -f cli/Justfile test
 
 # Print each app's current version, and flag it if they have drifted apart.
 #
