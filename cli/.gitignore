@@ -1,5 +1,7 @@
-# Build output
+# Build output. bin/ covers `go build -o bin/restforge`; /restforge ignores
+# a stray binary dropped in the cli root by a bare `go build ./cmd/restforge`.
+# Anchored so it never matches the cmd/restforge/ source directory.
 bin/
-restforge
+/restforge
 
 # Editor, agent and key-material ignores are repo-wide; see ../.gitignore.
