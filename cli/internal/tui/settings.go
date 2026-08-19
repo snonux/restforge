@@ -124,7 +124,6 @@ func newSettingsModel(initial []backend.Backend) settingsModel {
 	m.list.SetShowTitle(false)
 	m.list.SetShowStatusBar(false)
 	m.list.SetShowHelp(false)
-	m.list.SetFilteringEnabled(false)
 	m.list.DisableQuitKeybindings()
 	return m.rebuildList()
 }

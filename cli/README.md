@@ -61,6 +61,20 @@ gain a TUI-driven version of that part once it is re-recorded.
   (open it with `s` from the opening screen) adds, edits and removes a
   backend's name, base URL, auth header, secret and start rel, saving through
   the same TOML file `restforge get`/`restforge act` read.
+- **Saves and removes shortcuts from the TUI** — `s` on a Document row saves
+  it (a link or a safe/unsafe action; a property or embedded sub-entity is
+  refused, reported inline rather than silently ignored), `d` on Home's
+  Quick list removes the one under the cursor, both through
+  `internal/quick`, the same TOML file every other write goes through.
+- **Navigates with vi keys, in addition to the arrows** — `h`/`j`/`k`/`l`
+  stand in for back/down/up/select everywhere a cursor moves or a screen can
+  be dismissed, except inside a text field (ValuePrompt, or a Settings
+  backend being edited), where a literal `h` or `l` is still just a
+  character being typed.
+- **Filters the current screen's list** — `/` opens a fuzzy filter (Home's
+  two lists, Document's rows, Settings' backend list) matching against
+  everything a row shows, not only its title — a property's rendered value,
+  a backend's base URL, a shortcut's resolved backend name, and so on.
 
 The TUI's Home (backend/shortcut picker), Document (rendering a fetched
 entity), Confirm (yes/no on an unsafe action), ValuePrompt (a required-field

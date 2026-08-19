@@ -79,6 +79,34 @@ func persist(list []QuickItem, wanted QuickItem) (*QuickItem, error) {
 	return &item, nil
 }
 
+// RemoveItem drops the stored shortcut whose target matches item (see
+// same), rather than a position -- the caller-facing counterpart to Remove
+// for a caller that has an item in hand but not necessarily its position in
+// Load's own slice. Needed because a caller driving a UI over a filtered or
+// reordered view of the stored list (a terminal's fuzzy-filtered
+// bubbles/list.Model, for one) has no reliable position to pass Remove at
+// all: list.Model.Index() is the cursor's position within whatever subset
+// is currently displayed, not within the underlying stored order Load/Save
+// use, so translating one into the other would either require duplicating
+// this package's own filtering/ordering or would silently remove the wrong
+// entry the moment a filter narrows the list. Going through same() instead
+// sidesteps the mismatch entirely: whichever entry the caller is actually
+// looking at is exactly the one removed, independent of anything about how
+// it currently happens to be displayed. Same return contract as Remove:
+// false, nil when nothing matched; false, non-nil error only when Save
+// itself failed.
+func RemoveItem(item QuickItem) (bool, error) {
+	list, err := Load()
+	if err != nil {
+		return false, err
+	}
+	idx := indexOfSame(list, item)
+	if idx == -1 {
+		return false, nil
+	}
+	return removeAt(list, idx)
+}
+
 // Remove drops the shortcut at index. Returns false, nil -- refusing, not
 // an error -- when index is out of range; false, non-nil error only when
 // Save itself failed, so a caller never reports a removal that did not
@@ -91,7 +119,13 @@ func Remove(index int) (bool, error) {
 	if index < 0 || index >= len(list) {
 		return false, nil
 	}
+	return removeAt(list, index)
+}
 
+// removeAt drops list[index] and saves the result -- the shared tail of
+// Remove and RemoveItem, both of which have already loaded list and
+// resolved index within it by the time they call this.
+func removeAt(list []QuickItem, index int) (bool, error) {
 	updated := make([]QuickItem, 0, len(list)-1)
 	updated = append(updated, list[:index]...)
 	updated = append(updated, list[index+1:]...)

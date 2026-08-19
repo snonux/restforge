@@ -2,6 +2,7 @@ package tui
 
 import (
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/snonux/restforge/cli/internal/backend"
@@ -44,8 +45,16 @@ func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // the cursor (edit an existing backend, or start adding one on the trailing
 // Add row), 'd' deletes the row under the cursor, 's' saves the whole
 // working list, and everything else is forwarded to the list unchanged --
-// mirrors updateHome's own shape for Home's lists.
+// mirrors updateHome's own shape for Home's lists. Skips straight to
+// forwarding, none of the above applied, while the list's own filter input
+// has focus (list.Filtering) -- see updateDocument's own doc comment for
+// why.
 func (m Model) updateSettingsList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.currentFilterState() == list.Filtering {
+		var cmd tea.Cmd
+		m.settings.list, cmd = m.settings.list.Update(msg)
+		return m, cmd
+	}
 	switch {
 	case key.Matches(msg, settingsConfirmBinding):
 		m.settings = m.settings.activateSelection()

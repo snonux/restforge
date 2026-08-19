@@ -21,9 +21,15 @@ type settingsBackendItem struct {
 
 var _ list.Item = settingsBackendItem{}
 
-// FilterValue exists only to satisfy list.Item -- this screen's list has
-// filtering disabled (see newSettingsModel), so nothing ever calls this.
-func (i settingsBackendItem) FilterValue() string { return i.backend.Name }
+// FilterValue is what "/" filters this row against: the name (the row's
+// key) plus its base URL and auth header (the row's value, per its own list
+// rendering below) -- mirrors backendItem.FilterValue's own reasoning
+// (home_items.go). Never the secret: a filter query is echoed on screen in
+// FilterInput's own plain-text view, and the secret must never appear
+// anywhere but the auth header of a request (docs/DESIGN.md).
+func (i settingsBackendItem) FilterValue() string {
+	return i.backend.Name + " " + i.backend.BaseURL + " " + i.backend.AuthHeader
+}
 
 // settingsAddItem is the list's trailing "+ Add backend" row -- mirrors the
 // Dart screen's own OutlinedButton below its ListView, folded into the list
@@ -116,5 +122,5 @@ func (s settingsModel) listView() string {
 // trailing Add item, but is still worth advertising unconditionally: the
 // same "harmless when nothing is selected" reasoning applies here.
 func (s settingsModel) listHintLine() string {
-	return "↑/↓ move · enter edit/add · d delete · s save · esc cancel"
+	return "↑/↓/j/k move · enter/l edit/add · d delete · s save · / filter · esc/h cancel"
 }

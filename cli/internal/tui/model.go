@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -163,6 +164,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.resyncDocumentScreen(), m.startSpinnerCmd()
 	case settingsSavedMsg:
 		return m.applySettingsSaved(msg)
+	case homeQuickDeletedMsg:
+		return m.applyQuickDeleted(msg)
+	case documentQuickSavedMsg:
+		return m.applyQuickSaved(msg)
 	}
 	return m, nil
 }
@@ -232,13 +237,38 @@ func (m Model) View() string {
 }
 
 // handleKey applies the three global bindings every screen shares -- see
-// keys.go -- before falling back to whichever screen is current. Home
-// (updateHome, home_update.go), Document (updateDocument,
+// keys.go -- and the vi h/l remap (vikeys.go), before falling back to
+// whichever screen is current, unless a screen-owned list.Model's own
+// filter input has first refusal instead -- see currentFilterState's own
+// doc comment (vikeys.go) for the two states this checks and why:
+//
+//   - list.Filtering (a filter query is actively being typed): every key
+//     belongs to list.Model's own FilterInput, not the shell's global
+//     bindings, the vi remap, or this screen's own Enter/d/s/tab overrides
+//     (updateHome/updateDocument/updateSettingsList each make the same
+//     check for the same reason) -- dispatched straight through,
+//     unmodified.
+//   - Otherwise, but the filter is still applied (list.FilterApplied): only
+//     Esc defers to the list -- list.Model's own ClearFilter binding, which
+//     would otherwise lose to the shell's global Back the same way it would
+//     during Filtering. Every other key (q, ?, h/l/j/k, this screen's own
+//     Enter/d/s) behaves normally, since list.Model's handleBrowsing does
+//     not intercept any of those while a filter is merely applied rather
+//     than being edited.
+//
+// Home (updateHome, home_update.go), Document (updateDocument,
 // document_update.go), Settings (updateSettings, settings_update.go),
 // Confirm (updateConfirm, confirm_update.go), ValuePrompt
 // (updateValuePrompt, valueprompt_update.go) and Detail (updateDetail,
 // detail_update.go) are the screens with their own key handling.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch state := m.currentFilterState(); {
+	case state == list.Filtering:
+		return m.dispatchToScreen(msg)
+	case state != list.Unfiltered && key.Matches(msg, m.keys.Back):
+		return m.dispatchToScreen(msg)
+	}
+	msg = m.remapViKey(msg)
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		m.quitting = true
@@ -260,6 +290,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.detail = m.detail.syncFromSession(m.session.Detail())
 		return m, nil
 	}
+	return m.dispatchToScreen(msg)
+}
+
+// dispatchToScreen routes msg to whichever screen is current, with none of
+// handleKey's own global-binding or filter-state handling applied first --
+// split out so both handleKey's ordinary path and its two filter-deferral
+// cases above can reach a screen's own key handling without duplicating the
+// six-way switch.
+func (m Model) dispatchToScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.currentScreen() {
 	case screenHome:
 		return m.updateHome(msg)

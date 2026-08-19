@@ -59,6 +59,19 @@ type documentModel struct {
 	// does not need.
 	dismissedFailure *failure.Failure
 
+	// quickNotice is Document's own report of the last 's' (save as
+	// shortcut) press, styled through ErrorStyle when quickNoticeFailed
+	// (a genuine save failure, an already-full list, or an unsaveable row)
+	// or SuccessStyle otherwise. applyQuickSaved's own doc comment
+	// (document_update.go) explains why this lives here rather than as a
+	// session.SessionNotice: saving a shortcut is this screen's own action,
+	// not Session's, so it has nowhere else to report to. Cleared by
+	// dismissDocumentBanners (the same 'd' key clears the failure and
+	// notice banners) and by syncRows whenever the document itself changes,
+	// the same way dismissedFailure is.
+	quickNotice       string
+	quickNoticeFailed bool
+
 	// spinner animates while Session.IsLive is true -- see
 	// document_notice.go's watchingBannerView, which is the only place this
 	// is rendered, and model.go's startSpinnerCmd/handleSpinnerTick for how
@@ -71,17 +84,17 @@ type documentModel struct {
 
 // newDocumentModel builds the row list on documentDelegate (document_items.go),
 // at zero size -- Model.Update's tea.WindowSizeMsg case calls resize once the
-// real terminal size is known, the same lazy-sizing newHomeModel uses. The
-// list's own chrome is turned off for the same reasons newHomeModel's own
-// doc comment gives: this screen renders its own title and hint line, and
-// filtering is not worth the "esc" key it binds by default colliding with
-// the shell's global Back binding (keys.go).
+// real terminal size is known, the same lazy-sizing newHomeModel uses. Most
+// of the list's own chrome is turned off for the same reasons newHomeModel's
+// own doc comment gives: this screen renders its own title and hint line,
+// and quitting is the shell's job. Filtering stays on -- see newHomeModel's
+// own doc comment for why its default "esc" binding no longer collides with
+// the shell's global Back.
 func newDocumentModel() documentModel {
 	l := list.New(nil, documentDelegate{}, 0, 0)
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
 	l.SetShowHelp(false)
-	l.SetFilteringEnabled(false)
 	l.DisableQuitKeybindings()
 	return documentModel{rows: l, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot))}
 }
@@ -118,6 +131,8 @@ func (d documentModel) syncRows(doc *render.RenderedDocument) documentModel {
 	}
 	d.fingerprint = fp
 	d.dismissedFailure = nil
+	d.quickNotice = ""
+	d.quickNoticeFailed = false
 
 	var items []list.Item
 	if doc != nil {
@@ -181,6 +196,13 @@ func (d documentModel) View(src documentSource) string {
 	if banner := d.noticeBannerView(src); banner != "" {
 		b.WriteString(banner + "\n")
 	}
+	if d.quickNotice != "" {
+		style := SuccessStyle
+		if d.quickNoticeFailed {
+			style = ErrorStyle
+		}
+		b.WriteString(style.Render(d.quickNotice) + "\n")
+	}
 	if len(doc.Rows) == 0 {
 		b.WriteString(MutedStyle.Render("This document has nothing to show.") + "\n")
 	} else {
@@ -192,15 +214,17 @@ func (d documentModel) View(src documentSource) string {
 
 // hintLine is the Document screen's own short key hint -- keys.go's own
 // doc comment reserves the shell's global three (quit/back/help) for
-// bindings every screen shares, so Enter and the dismiss key are composed
-// here instead, the same split home.go's hintLine makes for Tab. The same
-// 'd' binding dismisses either banner (or both at once, if both are
-// showing) -- see documentDismissBinding's own doc comment (document_update.go).
+// bindings every screen shares, so Enter, 's' and the dismiss key are
+// composed here instead, the same split home.go's hintLine makes for Tab.
+// The same 'd' binding dismisses any of the failure/notice/quick-save
+// banners (or several at once, if more than one is showing) -- see
+// documentDismissBinding's own doc comment (document_update.go).
 func (d documentModel) hintLine(src documentSource) string {
-	if d.failureBannerView(src) != "" || d.dismissibleNoticeShowing(src) {
-		return "↑/↓ move · enter select · d dismiss"
+	base := "↑/↓/j/k move · enter/l select · s save shortcut · / filter"
+	if d.failureBannerView(src) != "" || d.dismissibleNoticeShowing(src) || d.quickNotice != "" {
+		return base + " · d dismiss"
 	}
-	return "↑/↓ move · enter select"
+	return base
 }
 
 // emptyView is what the Document screen shows before anything has ever

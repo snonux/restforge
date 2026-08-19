@@ -31,7 +31,7 @@ func newKeyMap() keyMap {
 		),
 		Back: key.NewBinding(
 			key.WithKeys("esc", "backspace"),
-			key.WithHelp("esc", "back"),
+			key.WithHelp("esc/h", "back"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),

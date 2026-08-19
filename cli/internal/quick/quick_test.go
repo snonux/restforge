@@ -465,6 +465,81 @@ func TestRemovingPastTheEndIsRefused(t *testing.T) {
 	}
 }
 
+// --- RemoveItem: identity-based removal, for a caller with an item in hand
+// but no reliable position (a filtered bubbles/list.Model, for one) -------
+
+func TestRemoveItemTakesTheMatchingOne(t *testing.T) {
+	setUp(t)
+	mustAdd(t, action("one", a, "/api/", "a"))
+	two := mustAdd(t, action("two", a, "/api/", "b"))
+
+	removed, err := quick.RemoveItem(*two)
+	if err != nil {
+		t.Fatalf("RemoveItem() error = %v", err)
+	}
+	if !removed {
+		t.Fatalf("RemoveItem() = false, want true")
+	}
+
+	loaded, err := quick.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Label != "one" {
+		t.Fatalf("Load() = %v, want single entry labelled one", loaded)
+	}
+}
+
+// TestRemoveItemIgnoresPositionMatchesOnTargetOnly proves RemoveItem removes
+// by target (BaseURL/Kind/Holder-or-Href/Name -- see same()), not by
+// position: passing a QuickItem whose Label differs from what is stored but
+// whose target is the same still removes the stored entry, and passing one
+// whose Label happens to match but whose target does not is refused. This
+// is the whole reason RemoveItem exists rather than every caller resolving
+// its own index into Remove -- see RemoveItem's own doc comment.
+func TestRemoveItemIgnoresPositionMatchesOnTargetOnly(t *testing.T) {
+	setUp(t)
+	mustAdd(t, action("original label", a, "/api/", "brew"))
+
+	// Same target, different label: still matches and removes.
+	removed, err := quick.RemoveItem(action("a different label entirely", a, "/api/", "brew"))
+	if err != nil {
+		t.Fatalf("RemoveItem() error = %v", err)
+	}
+	if !removed {
+		t.Fatalf("RemoveItem() with a matching target but a different label = false, want true (target, not label, is identity)")
+	}
+
+	loaded, err := quick.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("Load() after RemoveItem = %v, want empty", loaded)
+	}
+}
+
+func TestRemoveItemRefusesAnUnmatchedTarget(t *testing.T) {
+	setUp(t)
+	mustAdd(t, action("one", a, "/api/", "a"))
+
+	removed, err := quick.RemoveItem(action("one", a, "/api/", "does-not-exist"))
+	if err != nil {
+		t.Fatalf("RemoveItem() error = %v", err)
+	}
+	if removed {
+		t.Fatalf("RemoveItem() for an unstored target = true, want false")
+	}
+
+	loaded, err := quick.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("Load() after a refused RemoveItem = %v, want the original entry untouched", loaded)
+	}
+}
+
 // --- the shortcut cap ----------------------------------------------------
 
 func TestTheListIsCappedAtMaxQuick(t *testing.T) {

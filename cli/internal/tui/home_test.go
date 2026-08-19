@@ -288,6 +288,147 @@ func TestApplyQuickRanSetsNoticeOnError(t *testing.T) {
 	}
 }
 
+// --- deleteSelectedQuick / applyQuickDeleted (add/remove shortcuts) ------
+
+func TestDeleteSelectedQuickNoopWhenNothingSelected(t *testing.T) {
+	m, _ := newTestModel()
+
+	next, cmd := m.deleteSelectedQuick()
+	nm := next.(Model)
+
+	if cmd != nil {
+		t.Error("deleteSelectedQuick() returned a non-nil cmd for an empty Quick list")
+	}
+	if nm.base != screenHome {
+		t.Errorf("base = %v, want screenHome unchanged", nm.base)
+	}
+}
+
+// TestDeleteSelectedQuickRemovesTheSelectedShortcut drives the whole
+// delete-a-shortcut round trip: seed one stored shortcut, select it on
+// Home's Quick list, press the key ('d', via updateHome -- see
+// TestUpdateHomeDeleteQuickKeyRemovesTheSelectedShortcut for that half),
+// run the returned cmd, and check it is actually gone from storage once
+// applyQuickDeleted has folded the result back in.
+func TestDeleteSelectedQuickRemovesTheSelectedShortcut(t *testing.T) {
+	withHomeConfig(t, []backend.Backend{{Name: "test", BaseURL: testBaseURL, Secret: "k"}})
+	saved, err := quick.Add(quick.QuickItem{Label: "Root", BaseURL: testBaseURL, Kind: quick.KindDocument, Href: testBaseURL})
+	if err != nil {
+		t.Fatalf("quick.Add() error = %v", err)
+	}
+
+	m, _ := newTestModel()
+	be := backend.Backend{Name: "test", BaseURL: testBaseURL, Secret: "k"}
+	m.home = m.home.applyLoaded(homeLoadedMsg{rows: []homeQuickRow{{item: *saved, backend: &be}}})
+
+	next, cmd := m.deleteSelectedQuick()
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("deleteSelectedQuick() returned a nil cmd, want deleteQuickCmd")
+	}
+	msg := cmd()
+	deleted, ok := msg.(homeQuickDeletedMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want homeQuickDeletedMsg", msg)
+	}
+	if deleted.err != nil {
+		t.Fatalf("homeQuickDeletedMsg.err = %v, want nil", deleted.err)
+	}
+	if !deleted.ok {
+		t.Error("homeQuickDeletedMsg.ok = false, want true")
+	}
+
+	remaining, err := quick.Load()
+	if err != nil {
+		t.Fatalf("quick.Load() error = %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("quick.Load() after delete = %v, want empty", remaining)
+	}
+}
+
+func TestApplyQuickDeletedReloadsHomeOnSuccess(t *testing.T) {
+	withHomeConfig(t, []backend.Backend{{Name: "test", BaseURL: testBaseURL, Secret: "k"}})
+	m, _ := newTestModel()
+
+	next, cmd := m.applyQuickDeleted(homeQuickDeletedMsg{label: "Root", ok: true})
+	nm := next.(Model)
+
+	if nm.home.notice != "" {
+		t.Errorf("home.notice = %q, want empty on success", nm.home.notice)
+	}
+	if cmd == nil {
+		t.Fatal("applyQuickDeleted() returned a nil cmd on success, want homeInitCmd")
+	}
+	if _, ok := cmd().(homeLoadedMsg); !ok {
+		t.Errorf("cmd() = %T, want homeLoadedMsg (homeInitCmd)", cmd())
+	}
+}
+
+func TestApplyQuickDeletedSetsNoticeOnError(t *testing.T) {
+	m, _ := newTestModel()
+
+	next, _ := m.applyQuickDeleted(homeQuickDeletedMsg{label: "Root", err: errLoad})
+	nm := next.(Model)
+
+	if nm.home.notice == "" {
+		t.Error("home.notice is empty, want a report of the error")
+	}
+	if !strings.Contains(nm.home.notice, "Root") {
+		t.Errorf("home.notice = %q, want it to mention the shortcut's label", nm.home.notice)
+	}
+}
+
+func TestApplyQuickDeletedSetsNoticeWhenAlreadyGone(t *testing.T) {
+	withHomeConfig(t, nil)
+	m, _ := newTestModel()
+
+	next, cmd := m.applyQuickDeleted(homeQuickDeletedMsg{label: "Root", ok: false})
+	nm := next.(Model)
+
+	if nm.home.notice == "" {
+		t.Error("home.notice is empty, want a report that nothing was removed")
+	}
+	if cmd == nil {
+		t.Fatal("applyQuickDeleted() returned a nil cmd when ok=false, want homeInitCmd to still reload")
+	}
+}
+
+// TestUpdateHomeDeleteQuickKeyRemovesTheSelectedShortcut checks 'd' only
+// deletes while the Quick list has focus -- pressing it with the Backends
+// list focused must reach updateHomeList (bubbles/list's own handling)
+// instead, never deleteSelectedQuick.
+func TestUpdateHomeDeleteQuickKeyRemovesTheSelectedShortcut(t *testing.T) {
+	withHomeConfig(t, []backend.Backend{{Name: "test", BaseURL: testBaseURL, Secret: "k"}})
+	saved, err := quick.Add(quick.QuickItem{Label: "Root", BaseURL: testBaseURL, Kind: quick.KindDocument, Href: testBaseURL})
+	if err != nil {
+		t.Fatalf("quick.Add() error = %v", err)
+	}
+	m, _ := newTestModel()
+	be := backend.Backend{Name: "test", BaseURL: testBaseURL, Secret: "k"}
+	m.home = m.home.applyLoaded(homeLoadedMsg{
+		backends: []backend.Backend{be},
+		rows:     []homeQuickRow{{item: *saved, backend: &be}},
+	})
+	m.home.focus = homeFocusBackends
+
+	next, cmd := m.updateHome(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = next.(Model)
+	if cmd != nil {
+		t.Fatal("'d' with the Backends list focused returned a non-nil cmd, want it forwarded to the list instead")
+	}
+
+	m.home.focus = homeFocusQuick
+	next, cmd = m.updateHome(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("'d' with the Quick list focused returned a nil cmd, want deleteQuickCmd")
+	}
+	if _, ok := cmd().(homeQuickDeletedMsg); !ok {
+		t.Errorf("cmd() = %T, want homeQuickDeletedMsg", cmd())
+	}
+}
+
 // --- homeInitCmd ---------------------------------------------------------
 
 func TestHomeInitCmdLoadsBackendsAndQuick(t *testing.T) {
@@ -330,5 +471,39 @@ func TestHomeInitCmdWithNoConfigYieldsEmptyHome(t *testing.T) {
 	}
 	if len(loaded.rows) != 0 {
 		t.Errorf("homeLoadedMsg.rows = %v, want none", loaded.rows)
+	}
+}
+
+// --- filtering: matches a row's value, not just its label -----------------
+
+// TestHomeBackendFilterMatchesOnBaseURLNotJustName mirrors
+// TestDocumentFilterMatchesOnValueNotJustLabel (document_test.go) for
+// Home's own backend list.
+func TestHomeBackendFilterMatchesOnBaseURLNotJustName(t *testing.T) {
+	h := newHomeModel().resize(80, 24)
+	h = h.applyLoaded(homeLoadedMsg{backends: []backend.Backend{
+		{Name: "alpha", BaseURL: "https://alpha.example/", Secret: "k"},
+		{Name: "beta", BaseURL: "https://distinctivehost.example/", Secret: "k"},
+	}})
+
+	h.backends.SetFilterText("distinctivehost")
+
+	visible := h.backends.VisibleItems()
+	if len(visible) != 1 {
+		t.Fatalf("VisibleItems() len = %d after filtering on a base-URL-only term, want 1", len(visible))
+	}
+	item, ok := visible[0].(backendItem)
+	if !ok || item.backend.Name != "beta" {
+		t.Errorf("VisibleItems()[0] = %#v, want the backend whose BaseURL matched", visible[0])
+	}
+}
+
+func TestHomeListsFilteringIsEnabled(t *testing.T) {
+	h := newHomeModel()
+	if !h.backends.FilteringEnabled() {
+		t.Error("backends.FilteringEnabled() = false, want true")
+	}
+	if !h.shortcuts.FilteringEnabled() {
+		t.Error("shortcuts.FilteringEnabled() = false, want true")
 	}
 }

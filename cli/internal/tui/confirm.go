@@ -27,6 +27,6 @@ import "github.com/snonux/restforge/cli/internal/session"
 func confirmView(q session.ConfirmQuestion) string {
 	body := TitleStyle.Render(q.Heading) + "\n\n" +
 		q.Body + "\n\n" +
-		MutedStyle.Render("y confirm · n/esc cancel")
+		MutedStyle.Render("y confirm · n/esc/h cancel")
 	return OverlayBorderStyle.Render(body)
 }

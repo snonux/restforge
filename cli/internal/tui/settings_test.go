@@ -488,3 +488,35 @@ func TestSettingsSaveCmdWritesThroughConfig(t *testing.T) {
 		t.Errorf("LoadBackends() = %v, want one backend named alpha", got)
 	}
 }
+
+// --- filtering: matches a backend's value, not just its name -------------
+
+// TestSettingsFilterMatchesOnBaseURLNotJustName mirrors
+// TestDocumentFilterMatchesOnValueNotJustLabel (document_test.go): a filter
+// query that only appears in a backend's base URL (its value) must still
+// find it, proving settingsBackendItem.FilterValue() covers more than the
+// name alone.
+func TestSettingsFilterMatchesOnBaseURLNotJustName(t *testing.T) {
+	m := newSettingsModel([]backend.Backend{
+		{Name: "alpha", BaseURL: "https://alpha.example/", Secret: "k"},
+		{Name: "beta", BaseURL: "https://distinctivehost.example/", Secret: "k"},
+	}).resize(80, 24)
+
+	m.list.SetFilterText("distinctivehost")
+
+	visible := m.list.VisibleItems()
+	if len(visible) != 1 {
+		t.Fatalf("VisibleItems() len = %d after filtering on a base-URL-only term, want 1", len(visible))
+	}
+	item, ok := visible[0].(settingsBackendItem)
+	if !ok || item.backend.Name != "beta" {
+		t.Errorf("VisibleItems()[0] = %#v, want the backend whose BaseURL matched", visible[0])
+	}
+}
+
+func TestSettingsFilteringIsEnabled(t *testing.T) {
+	m := newSettingsModel(nil)
+	if !m.list.FilteringEnabled() {
+		t.Error("FilteringEnabled() = false, want true")
+	}
+}

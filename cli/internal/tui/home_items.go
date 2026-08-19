@@ -18,9 +18,10 @@ type backendItem struct {
 
 var _ list.Item = backendItem{}
 
-// FilterValue exists only to satisfy list.Item -- Home's lists have
-// filtering disabled (see newHomeModel), so nothing ever calls this.
-func (i backendItem) FilterValue() string { return i.backend.Name }
+// FilterValue is what "/" filters this row against: the name (the row's
+// key) plus its base URL (the row's value, per renderBackendRow's own
+// subtitle) -- so filtering by either finds it, not just by name.
+func (i backendItem) FilterValue() string { return i.backend.Name + " " + i.backend.BaseURL }
 
 // quickItem adapts homeQuickRow (home_cmd.go) to list.Item for Home's
 // shortcuts list. backend is the shortcut's *current* backend -- nil once
@@ -31,8 +32,11 @@ type quickItem homeQuickRow
 
 var _ list.Item = quickItem{}
 
-// FilterValue exists only to satisfy list.Item -- see backendItem's.
-func (i quickItem) FilterValue() string { return i.item.Label }
+// FilterValue is what "/" filters this row against: the shortcut's label
+// (the row's key) plus quickSubtitle's own text (the row's value: which
+// backend and kind, or "Backend removed") -- mirrors backendItem's own
+// reasoning.
+func (i quickItem) FilterValue() string { return i.item.Label + " " + quickSubtitle(i) }
 
 // homeDelegate renders both backendItem and quickItem rows through the
 // shared styles.go palette -- one delegate for both of Home's lists, so a

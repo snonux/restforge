@@ -59,13 +59,17 @@ type homeModel struct {
 // newHomeModel builds both lists on the shared homeDelegate (home_items.go)
 // at zero size -- Model.Update's tea.WindowSizeMsg case calls resize once
 // the real terminal size is known, the same lazy-sizing every bubbles/list
-// example uses. Each list.Model's own chrome (title, status bar, help,
-// filtering, and its own quit keybindings) is turned off: Home renders its
-// own heading and hint line (see View), and filtering is not worth the
-// "esc" key it binds by default colliding with the shell's global Back
-// binding (keys.go) for a list capped at backend.MaxBackends/quick.MaxQuick
-// items apiece -- there is nothing here filtering would meaningfully speed
-// up. Quit is the shell's job (keys.go's global Quit), never a list's own.
+// example uses. Most of each list.Model's own chrome (title, status bar,
+// help, and its own quit keybindings) is turned off: Home renders its own
+// heading and hint line (see View), and quitting is the shell's job (keys.go's
+// global Quit), never a list's own. Filtering stays on, styled through the
+// same list.DefaultStyles FilterInput already uses -- Model.handleKey and
+// this screen's own updateHome/updateHomeList (home_update.go) defer to
+// list.Model's own filter handling rather than reimplementing any part of
+// it (see vikeys.go's package comment and handleKey's own doc comment for
+// exactly which keys defer and when), so its default "esc" cancel/clear
+// binding no longer collides with the shell's global Back the way it would
+// have before that deferral existed.
 func newHomeModel() homeModel {
 	backends := list.New(nil, homeDelegate{}, 0, 0)
 	shortcuts := list.New(nil, homeDelegate{}, 0, 0)
@@ -73,7 +77,6 @@ func newHomeModel() homeModel {
 		l.SetShowTitle(false)
 		l.SetShowStatusBar(false)
 		l.SetShowHelp(false)
-		l.SetFilteringEnabled(false)
 		l.DisableQuitKeybindings()
 	}
 	return homeModel{backends: backends, shortcuts: shortcuts}
@@ -133,10 +136,14 @@ func (h homeModel) emptyStateView() string {
 // unconditionally, the same way emptyStateView points at it when there is
 // nothing else on screen to find it from.
 func (h homeModel) hintLine() string {
-	if h.hasShortcuts && len(h.backends.Items()) > 0 {
-		return "↑/↓ move · enter select · tab switch list · s settings"
+	base := "↑/↓/j/k move · enter/l select · / filter · s settings"
+	if h.focus == homeFocusQuick {
+		base += " · d remove shortcut"
 	}
-	return "↑/↓ move · enter select · s settings"
+	if h.hasShortcuts && len(h.backends.Items()) > 0 {
+		return base + " · tab switch list"
+	}
+	return base
 }
 
 // resize gives both lists their share of the available body height, after

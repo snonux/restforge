@@ -20,11 +20,13 @@ type documentRowItem struct {
 
 var _ list.Item = documentRowItem{}
 
-// FilterValue exists only to satisfy list.Item -- the Document screen's
-// list has filtering disabled (see newDocumentModel), so nothing ever calls
-// this. See backendItem.FilterValue's own doc comment for the same
-// reasoning.
-func (i documentRowItem) FilterValue() string { return i.row.Label }
+// FilterValue is what "/" filters this row against: the row's Label (its
+// key -- a property name, a link's rel, an action's title) plus its
+// Sublabel (its value -- a property's rendered value, or an embedded
+// entity's own summary; empty for a link/action, which have none) -- see
+// backendItem.FilterValue's own doc comment for the same "match key or
+// value" reasoning.
+func (i documentRowItem) FilterValue() string { return i.row.Label + " " + i.row.Sublabel }
 
 // documentDelegate renders one row of a render.RenderedDocument, styled
 // through the shared styles.go palette and distinguished by RowKind --

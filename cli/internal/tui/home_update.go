@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/snonux/restforge/cli/internal/session"
@@ -16,18 +17,30 @@ import (
 // homeModel.hintLine (home.go) for where Home's own hint text lives
 // instead.
 var (
-	homeTabBinding      = key.NewBinding(key.WithKeys("tab"))
-	homeEnterBinding    = key.NewBinding(key.WithKeys("enter"))
-	homeSettingsBinding = key.NewBinding(key.WithKeys("s"))
+	homeTabBinding         = key.NewBinding(key.WithKeys("tab"))
+	homeEnterBinding       = key.NewBinding(key.WithKeys("enter"))
+	homeSettingsBinding    = key.NewBinding(key.WithKeys("s"))
+	homeDeleteQuickBinding = key.NewBinding(key.WithKeys("d"))
 )
 
 // updateHome routes a key event to whichever of Home's two lists has focus,
-// intercepting Tab (switch focus) and Enter (activate the current
-// selection) itself -- everything else (arrows, page up/down, and so on) is
-// bubbles/list's own DefaultKeyMap, forwarded unchanged by updateHomeList.
-// Called from Model.handleKey's fallback once the three global bindings
-// (quit/back/help) have all missed.
+// intercepting Tab (switch focus), Enter (activate the current selection)
+// and, while the Quick list has focus, 'd' (delete the shortcut under the
+// cursor, deleteSelectedQuick) itself -- everything else (arrows, j/k/h/l,
+// page up/down, and so on) is bubbles/list's own DefaultKeyMap plus this
+// package's vi remap, forwarded unchanged by updateHomeList. Called from
+// Model.handleKey's fallback once the three global bindings (quit/back/
+// help) have all missed.
+//
+// Skips straight to updateHomeList, none of the above applied, while the
+// focused list's own filter input has focus (list.Filtering) -- 'd', 's'
+// and Tab must reach a filter query being typed the same way Document's own
+// Enter/'d' overrides do (see updateDocument's own doc comment) rather than
+// firing on every keystroke of a search.
 func (m Model) updateHome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.currentFilterState() == list.Filtering {
+		return m.updateHomeList(msg)
+	}
 	switch {
 	case key.Matches(msg, homeTabBinding) && m.home.hasShortcuts && len(m.home.backends.Items()) > 0:
 		m.home.focus = m.home.focus.toggle()
@@ -36,6 +49,8 @@ func (m Model) updateHome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.activateHomeSelection()
 	case key.Matches(msg, homeSettingsBinding):
 		return m.openSettings(), nil
+	case key.Matches(msg, homeDeleteQuickBinding) && m.home.focus == homeFocusQuick:
+		return m.deleteSelectedQuick()
 	}
 	return m.updateHomeList(msg)
 }
@@ -95,6 +110,43 @@ func (m Model) activateHomeSelection() (tea.Model, tea.Cmd) {
 		return m, runQuickCmd(m.session, item)
 	}
 	return m, nil
+}
+
+// deleteSelectedQuick removes the shortcut the Quick list's cursor is
+// currently on, via quick.RemoveItem (deleteQuickCmd, home_cmd.go) -- a no-op
+// with nothing selected (an empty list). Mirrors home_screen.dart's own
+// remove-shortcut affordance (a dedicated icon button on each row, see
+// _QuickTile's onRemove) translated to a key rather than a pointer target,
+// the same way this screen's other row actions already are (Enter to
+// activate, 's' to open Settings).
+func (m Model) deleteSelectedQuick() (tea.Model, tea.Cmd) {
+	item, ok := m.home.selectedQuick()
+	if !ok {
+		return m, nil
+	}
+	return m, deleteQuickCmd(item)
+}
+
+// applyQuickDeleted folds a homeQuickDeletedMsg into the shell: a failure
+// (either the underlying Save erroring, or RemoveItem finding nothing left
+// to remove -- the shortcut list on screen and the stored one having
+// drifted apart is the only way that second case happens, since the row
+// just came from a load of the same file) is reported as Home's own notice,
+// the same field applyQuickRan already uses for QuickRunBackendMissing;
+// success reloads Home's lists (homeInitCmd) exactly the way a Settings save
+// does (applySettingsSaved, model.go), so the removed row disappears and
+// nothing else about the reload logic is duplicated here.
+func (m Model) applyQuickDeleted(msg homeQuickDeletedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.home.notice = fmt.Sprintf("could not remove %q: %v", msg.label, msg.err)
+		return m, nil
+	}
+	if !msg.ok {
+		m.home.notice = fmt.Sprintf("%q was already removed", msg.label)
+		return m, homeInitCmd()
+	}
+	m.home.notice = ""
+	return m, homeInitCmd()
 }
 
 // applyQuickRan folds a homeQuickRanMsg into the shell: QuickRunOpened

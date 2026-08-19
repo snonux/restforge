@@ -11,6 +11,7 @@ import (
 	"github.com/snonux/restforge/cli/internal/failure"
 	"github.com/snonux/restforge/cli/internal/live"
 	"github.com/snonux/restforge/cli/internal/nav"
+	"github.com/snonux/restforge/cli/internal/quick"
 	"github.com/snonux/restforge/cli/internal/render"
 	"github.com/snonux/restforge/cli/internal/session"
 )
@@ -326,6 +327,180 @@ func TestUpdateDocumentDismissClearsFailureBanner(t *testing.T) {
 	nm := next.(Model)
 	if nm.document.dismissedFailure != nm.session.Failure() {
 		t.Error("'d' did not record the current failure as dismissed")
+	}
+}
+
+// --- filtering: matches a row's value, not just its label (fuzzy search) -
+
+// TestDocumentFilterMatchesOnValueNotJustLabel is this task's own named
+// requirement: filtering must find a row by what it shows, key or value,
+// not only its label. rowB's Label ("second") never contains "unusual",
+// which only appears in its Sublabel (its rendered value) -- so a filter
+// query matching only the value proves documentRowItem.FilterValue()
+// actually includes Sublabel, not just Label.
+func TestDocumentFilterMatchesOnValueNotJustLabel(t *testing.T) {
+	d := newDocumentModel().resize(80, 24)
+	d = d.syncRows(&render.RenderedDocument{
+		Title: "Doc",
+		Rows: []render.Row{
+			{Label: "first", Sublabel: "ordinary", Kind: render.RowKindProperty},
+			{Label: "second", Sublabel: "an unusual value", Kind: render.RowKindProperty},
+		},
+	})
+	if len(d.rows.Items()) != 2 {
+		t.Fatalf("test setup: rows.Items() len = %d, want 2", len(d.rows.Items()))
+	}
+
+	d.rows.SetFilterText("unusual")
+
+	visible := d.rows.VisibleItems()
+	if len(visible) != 1 {
+		t.Fatalf("VisibleItems() len = %d after filtering on a value-only term, want 1", len(visible))
+	}
+	row, ok := visible[0].(documentRowItem)
+	if !ok || row.row.Label != "second" {
+		t.Errorf("VisibleItems()[0] = %#v, want the row whose Sublabel matched", visible[0])
+	}
+}
+
+// TestDocumentFilteringIsEnabled is a narrow regression guard for the flag
+// itself: newDocumentModel used to call SetFilteringEnabled(false) (see its
+// own doc comment's history), and a future revert of that would make "/"
+// do nothing at all rather than fail loudly -- this test exists so that
+// silent regression fails instead.
+func TestDocumentFilteringIsEnabled(t *testing.T) {
+	d := newDocumentModel()
+	if !d.rows.FilteringEnabled() {
+		t.Error("FilteringEnabled() = false, want true")
+	}
+}
+
+// --- saveSelectedQuick / applyQuickSaved (save a row as a shortcut) -----
+
+func TestSaveSelectedQuickNoopWhenNothingSelected(t *testing.T) {
+	m, _ := newTestModel()
+
+	_, cmd := m.saveSelectedQuick()
+
+	if cmd != nil {
+		t.Error("saveSelectedQuick() returned a non-nil cmd with no row selected")
+	}
+}
+
+// TestSaveSelectedQuickSavesTheSelectedLinkRow drives the whole
+// save-a-shortcut round trip: open a backend whose root has one link row
+// (newLinkedTestModel's own fixture), select it, press 's' (via
+// updateDocument), run the returned cmd, and check the shortcut actually
+// landed in storage once applyQuickSaved has folded the result back into
+// documentModel.quickNotice.
+func TestSaveSelectedQuickSavesTheSelectedLinkRow(t *testing.T) {
+	withHomeConfig(t, nil)
+	m := newLinkedTestModel()
+	m.session.OpenBackend(backend.Backend{Name: "test", BaseURL: testBaseURL})
+	m.base = screenDocument
+	m.document = m.document.syncRows(m.session.Document())
+	m.document.rows.Select(0)
+
+	next, cmd := m.updateDocument(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("updateDocument('s') returned a nil cmd, want saveQuickCmd")
+	}
+	msg := cmd()
+	saved, ok := msg.(documentQuickSavedMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want documentQuickSavedMsg", msg)
+	}
+	if saved.err != nil {
+		t.Fatalf("documentQuickSavedMsg.err = %v, want nil", saved.err)
+	}
+	if saved.outcome != session.QuickSaveSaved {
+		t.Fatalf("documentQuickSavedMsg.outcome = %v, want QuickSaveSaved", saved.outcome)
+	}
+
+	stored, err := quick.Load()
+	if err != nil {
+		t.Fatalf("quick.Load() error = %v", err)
+	}
+	if len(stored) != 1 || stored[0].Href != "/child" {
+		t.Errorf("quick.Load() = %v, want one shortcut targeting /child", stored)
+	}
+}
+
+func TestApplyQuickSavedShowsSuccessNotice(t *testing.T) {
+	withHomeConfig(t, nil)
+	m, _ := newTestModel()
+
+	next, cmd := m.applyQuickSaved(documentQuickSavedMsg{label: "Root", outcome: session.QuickSaveSaved})
+	nm := next.(Model)
+
+	if nm.document.quickNoticeFailed {
+		t.Error("quickNoticeFailed = true on QuickSaveSaved, want false")
+	}
+	if !strings.Contains(nm.document.quickNotice, "Root") {
+		t.Errorf("quickNotice = %q, want it to mention the row's label", nm.document.quickNotice)
+	}
+	if cmd == nil {
+		t.Fatal("applyQuickSaved() returned a nil cmd on QuickSaveSaved, want homeInitCmd so Home's shortcut list is refreshed")
+	}
+	if _, ok := cmd().(homeLoadedMsg); !ok {
+		t.Errorf("cmd() = %T, want homeLoadedMsg (homeInitCmd)", cmd())
+	}
+}
+
+func TestApplyQuickSavedReportsNotSaveable(t *testing.T) {
+	m, _ := newTestModel()
+
+	next, _ := m.applyQuickSaved(documentQuickSavedMsg{label: "A property", outcome: session.QuickSaveNotSaveable})
+	nm := next.(Model)
+
+	if !nm.document.quickNoticeFailed {
+		t.Error("quickNoticeFailed = false on QuickSaveNotSaveable, want true")
+	}
+	if nm.document.quickNotice == "" {
+		t.Error("quickNotice is empty, want a report that the row cannot be saved")
+	}
+}
+
+func TestApplyQuickSavedReportsFull(t *testing.T) {
+	m, _ := newTestModel()
+
+	next, _ := m.applyQuickSaved(documentQuickSavedMsg{label: "Root", outcome: session.QuickSaveFull})
+	nm := next.(Model)
+
+	if !nm.document.quickNoticeFailed {
+		t.Error("quickNoticeFailed = false on QuickSaveFull, want true")
+	}
+}
+
+func TestApplyQuickSavedReportsError(t *testing.T) {
+	m, _ := newTestModel()
+
+	next, _ := m.applyQuickSaved(documentQuickSavedMsg{label: "Root", err: errLoad})
+	nm := next.(Model)
+
+	if !nm.document.quickNoticeFailed {
+		t.Error("quickNoticeFailed = false on error, want true")
+	}
+	if nm.document.quickNotice == "" {
+		t.Error("quickNotice is empty, want the error reported")
+	}
+}
+
+// TestUpdateDocumentDismissClearsQuickNotice checks the same 'd' key that
+// clears the failure/notice banners also clears quickNotice -- see
+// dismissDocumentBanners' own doc comment.
+func TestUpdateDocumentDismissClearsQuickNotice(t *testing.T) {
+	m, _ := newTestModel()
+	m.document.quickNotice = "saved \"Root\" as a shortcut"
+
+	next, cmd := m.updateDocument(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd != nil {
+		t.Error("dismissing the quick-save banner should not need a tea.Cmd")
+	}
+	nm := next.(Model)
+	if nm.document.quickNotice != "" {
+		t.Errorf("quickNotice = %q after 'd', want cleared", nm.document.quickNotice)
 	}
 }
 

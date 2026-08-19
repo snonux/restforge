@@ -108,5 +108,5 @@ func (d detailModel) View(detail session.DetailView) string {
 // overlay -- see Model.handleBack, which calls Session.DismissDetail before
 // this screen's own key handling (updateDetail, detail_update.go) ever runs.
 func (d detailModel) hintLine() string {
-	return "↑/↓ scroll · esc close"
+	return "↑/↓/j/k scroll · esc/h close"
 }

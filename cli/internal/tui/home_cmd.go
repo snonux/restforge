@@ -114,3 +114,24 @@ func runQuickCmd(sess *session.Session, item quick.QuickItem) tea.Cmd {
 		return homeQuickRanMsg{outcome: outcome, label: item.Label, err: err}
 	}
 }
+
+// homeQuickDeletedMsg reports that Home's call to quick.RemoveItem
+// (deleteSelectedQuick, home_update.go) has returned. ok mirrors
+// RemoveItem's own "removed, or refused" distinction (ops.go); err is
+// non-nil only when the underlying Save failed.
+type homeQuickDeletedMsg struct {
+	label string
+	ok    bool
+	err   error
+}
+
+// deleteQuickCmd removes item via quick.RemoveItem, off Update's own
+// goroutine -- a TOML file write, same "never block Update" reasoning as
+// every other I/O call in this package (see cmd.go's doc comment), even
+// though it is local disk rather than network.
+func deleteQuickCmd(item quick.QuickItem) tea.Cmd {
+	return func() tea.Msg {
+		ok, err := quick.RemoveItem(item)
+		return homeQuickDeletedMsg{label: item.Label, ok: ok, err: err}
+	}
+}
