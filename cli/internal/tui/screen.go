@@ -14,8 +14,8 @@ type screen int
 
 const (
 	// screenHome is the opening screen: the configured-backend and
-	// saved-quick-shortcut picker. Filled in by task 431; a placeholder
-	// here. The root Model starts on this screen.
+	// saved-quick-shortcut picker, rendered by homeModel (home.go). The
+	// root Model starts on this screen.
 	screenHome screen = iota
 
 	// screenDocument renders Session.Document's rows for whichever

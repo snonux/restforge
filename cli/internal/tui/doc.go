@@ -24,13 +24,22 @@
 //     the same spirit as flutter/lib/main.dart's ThemeData: a screen reaches
 //     for a style declared here rather than inlining its own
 //     lipgloss.NewStyle(), so the whole TUI reads as one visual system.
+//   - home.go, home_items.go, home_update.go and home_cmd.go are the Home
+//     screen: the configured-backend and saved-quick-shortcut picker, two
+//     bubbles/list.Models reading internal/config and internal/quick
+//     directly when Home mounts (see home_cmd.go's homeInitCmd), never
+//     through Session -- mirrors nav_service.dart's module comment that the
+//     backend picker is out of NavService's scope. Picking a backend opens
+//     it (Session.OpenBackend); picking a shortcut runs it
+//     (Session.RunQuick); either switches the shell to the Document screen.
 //
 // # What this package deliberately does not do yet
 //
-// No screen here does anything beyond naming itself: Home does not list
-// backends, Document does not render rows, Settings does not edit a
-// backend. Each is a placeholder task 431/531/931/631/731 (see this
-// project's task tracker) fills in. This package's job is the shell around
-// them -- the Model, the navigation between screen states, the shared
-// styles and the async pattern -- not the screens themselves.
+// Beyond Home, every other screen still does nothing but name itself:
+// Document does not render rows, Settings does not edit a backend, and so
+// on. Each is a placeholder task 531/931/631/731 (see this project's task
+// tracker) fills in. This package's job is the shell around them -- the
+// Model, the navigation between screen states, the shared styles and the
+// async pattern -- plus, now, the one screen (Home) that shell exists to
+// show first.
 package tui

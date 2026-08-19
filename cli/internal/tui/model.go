@@ -32,6 +32,13 @@ type Model struct {
 	keys keyMap
 	help help.Model
 
+	// home is the Home screen's own state -- the configured-backend and
+	// saved-shortcut lists (see home.go). Always kept up to date, even
+	// while a different screen is current, the same way base only changes
+	// on explicit navigation: there is exactly one homeModel for the
+	// program's lifetime, not one per visit.
+	home homeModel
+
 	showHelp bool
 	quitting bool
 
@@ -39,23 +46,29 @@ type Model struct {
 }
 
 // New builds the root Model wrapping sess, starting on the Home screen with
-// nothing yet fetched -- opening a backend is Home's own job (task 431),
-// not this shell's; see run.go's doc comment on why Run does not do it
-// either.
+// nothing yet fetched -- opening a backend (or running a saved shortcut) is
+// Home's own job, kicked off from Init below once the terminal is running,
+// not this constructor's; see run.go's doc comment on why Run does not do
+// it either.
 func New(sess *session.Session) Model {
 	return Model{
 		session: sess,
 		base:    screenHome,
 		keys:    newKeyMap(),
 		help:    help.New(),
+		home:    newHomeModel(),
 	}
 }
 
-// Init has nothing to kick off: the Home screen that will load configured
-// backends is a later task's Init to write, and this shell opens no
-// backend and starts no fetch on its own (see New).
+// Init kicks off Home's own load of the configured backends and saved
+// shortcuts (homeInitCmd, home_cmd.go) -- internal/config and internal/quick
+// directly, not through Session; see homeInitCmd's own doc comment for why.
+// No backend is opened and no fetch is started here: deciding which
+// backend to open, or which shortcut to run, only happens once the user
+// picks one on the rendered Home screen (see home_update.go's
+// activateHomeSelection).
 func (m Model) Init() tea.Cmd {
-	return nil
+	return homeInitCmd()
 }
 
 // Update is Bubble Tea's single-threaded event loop entry point -- see the
@@ -66,6 +79,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.help.Width = msg.Width
+		m.home = m.home.resize(msg.Width, msg.Height)
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -77,6 +91,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// copy" contract internal/session's own package comment
 		// describes for a caller of its methods.
 		return m, nil
+	case homeLoadedMsg:
+		m.home = m.home.applyLoaded(msg)
+		return m, nil
+	case homeOpenedMsg:
+		m.base = screenDocument
+		return m, nil
+	case homeQuickRanMsg:
+		return m.applyQuickRan(msg), nil
 	}
 	return m, nil
 }
@@ -98,10 +120,11 @@ func (m Model) View() string {
 }
 
 // handleKey applies the three global bindings every screen shares -- see
-// keys.go. A screen-specific key (a Confirm's yes/no, ValuePrompt's
-// submit) is handled by that screen's own Update, which a later task wires
-// in ahead of this fallback -- there is nothing here yet for it to fall
-// past.
+// keys.go -- before falling back to whichever screen is current. Home is
+// the only screen with its own key handling so far (updateHome,
+// home_update.go); a screen-specific key for one of the screens still
+// pending (Confirm's yes/no, ValuePrompt's submit, and so on) is that
+// screen's own task to add to this same fallback.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -112,6 +135,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, m.keys.Back):
 		return m.handleBack(), nil
+	}
+	if m.currentScreen() == screenHome {
+		return m.updateHome(msg)
 	}
 	return m, nil
 }
@@ -146,13 +172,17 @@ func (m Model) currentScreen() screen {
 	return deriveScreen(m.session, m.base)
 }
 
-// currentScreenView renders the current screen's body. Every screen is
-// still a placeholder -- see screen.go for which task fills each one in --
-// so there is nothing yet to switch on; once a real screen lands, its task
-// replaces this with a per-screen switch (the same closed-switch,
-// default-panics convention render.RowTarget and session.SessionQuestion
-// use), one case at a time.
+// currentScreenView renders the current screen's body: Home's own view
+// (home.go) once it is current, renderPlaceholder for every screen still
+// pending -- see screen.go for which task fills each one in. Grown one case
+// at a time as each screen task lands, rather than a closed switch with a
+// default-panics canary (render.RowTarget and session.SessionQuestion's own
+// convention): unlike those, "not yet implemented" is this switch's
+// deliberate, temporary default for the screens beyond Home, not a bug.
 func (m Model) currentScreenView() string {
+	if m.currentScreen() == screenHome {
+		return m.home.View()
+	}
 	return renderPlaceholder(m.currentScreen())
 }
 
