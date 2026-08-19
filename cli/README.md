@@ -24,9 +24,16 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea),
 [Cobra](https://github.com/spf13/cobra) for the CLI subcommands, and TOML
 config via [BurntSushi/toml](https://github.com/BurntSushi/toml).
 
-There is no screenshot or terminal recording of the TUI yet — none has been
-captured. This section will gain one once that exists, rather than describing
-what is not there.
+![restforge demo: opening screen, browsing a document, and confirming, watching and re-fetching an action](docs/demo.gif)
+
+Recorded against the shared fixture Siren API with
+[VHS](https://github.com/charmbracelet/vhs) — `just record-demo`
+(`tools/record-demo.sh` + `tools/demo.tape`) reproduces it. The confirm/watch/
+re-fetch moments run through `restforge act`, not the TUI: as of this
+recording the TUI's Confirm/ValuePrompt/Detail overlay screens still render a
+placeholder (see "What it does today" below) — they share the same
+`internal/session` state machine, so the recording will gain a TUI-driven
+version of that part once those screens land.
 
 ## What it does today
 

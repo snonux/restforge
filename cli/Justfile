@@ -65,3 +65,14 @@ install:
 clean:
     rm -rf bin/
     go clean
+
+# ─────────────────────────────────────────────
+# Media
+# ─────────────────────────────────────────────
+
+# Record docs/demo.gif with VHS against the fixture Siren API. Manual and
+# opt-in -- not part of check or test, since recording a GIF is not a
+# correctness check and takes the better part of a minute. Requires vhs
+# (https://github.com/charmbracelet/vhs) on $PATH.
+record-demo:
+    @bash tools/record-demo.sh
