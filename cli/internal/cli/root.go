@@ -56,6 +56,7 @@ func newRoot() *cobra.Command {
 	wireRootFlags(root, g)
 	root.AddCommand(newVersionCmd(g))
 	root.AddCommand(newGetCmd(g))
+	root.AddCommand(newActCmd(g))
 	return root
 }
 
@@ -122,6 +123,7 @@ func Run(args []string) int {
 func run(cmd *cobra.Command, args []string, out, errs io.Writer) int {
 	cmd.SetArgs(args)
 	cmd.SetOut(out)
+	cmd.SetErr(errs)
 	if err := cmd.Execute(); err != nil {
 		// If reporting the error itself fails (a broken stderr), there is
 		// nothing left to do but return the exit code the error maps to.

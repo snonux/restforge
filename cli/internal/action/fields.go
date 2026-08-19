@@ -59,8 +59,13 @@ func (FieldsRefused) isFieldFillOutcome() {}
 // missing", scanning act.Fields once more against the map fieldValues
 // already produced. Mirrors the missing/problem branches of fieldValues()
 // in actions.js and fillFields() in action_service.dart.
-func FillFields(act siren.Action, confirmed bool, spoken *FieldAnswer) FieldFillOutcome {
-	values := fieldValues(act, confirmed, spoken)
+//
+// userValues is the caller-supplied field map the one-shot CLI passes via
+// --field key=value: it fills a field ahead of the missing-required
+// decision, so a required field the caller supplied is not "missing" and
+// is never asked for out loud. Interactive callers pass nil.
+func FillFields(act siren.Action, confirmed bool, spoken *FieldAnswer, userValues map[string]string) FieldFillOutcome {
+	values := fieldValues(act, confirmed, spoken, userValues)
 
 	missing, refused := firstMissingRequiredField(act, values)
 	if refused != "" {
@@ -79,6 +84,10 @@ func FillFields(act siren.Action, confirmed bool, spoken *FieldAnswer) FieldFill
 //     checkbox *is* the confirmation this app already asked for;
 //   - a value matching spoken's field name is what the user just said,
 //     asked for by FillFields on an earlier call;
+//   - a value in userValues is what a one-shot caller passed directly
+//     (--field key=value), which stands in for a field without asking for
+//     it out loud -- it takes precedence over the server's own default
+//     below, but not over a confirmation or an explicitly asked-for value;
 //   - anything else takes the default the server declared in Value.
 //
 // A required field with none of those is left out of the result here --
@@ -90,7 +99,7 @@ func FillFields(act siren.Action, confirmed bool, spoken *FieldAnswer) FieldFill
 // bare fill without FillFields's missing-field decision layered on top --
 // tests reach it directly the same way action_service_test.dart's
 // "fieldValues" group does, by living in this package.
-func fieldValues(act siren.Action, confirmed bool, spoken *FieldAnswer) map[string]string {
+func fieldValues(act siren.Action, confirmed bool, spoken *FieldAnswer, userValues map[string]string) map[string]string {
 	values := make(map[string]string)
 	for _, field := range act.Fields {
 		if field.Name == "" {
@@ -101,8 +110,15 @@ func fieldValues(act siren.Action, confirmed bool, spoken *FieldAnswer) map[stri
 			values[field.Name] = strconv.FormatBool(confirmed)
 		case spoken != nil && spoken.Name == field.Name:
 			values[field.Name] = spoken.Text
-		case field.Value != nil:
-			values[field.Name] = fmt.Sprint(field.Value)
+		default:
+			// userValues (--field) takes precedence over the server's own
+			// default, but not over a confirmation or an explicitly asked-for
+			// value. A nil userValues map reads as empty, so this is safe.
+			if v, ok := userValues[field.Name]; ok {
+				values[field.Name] = v
+			} else if field.Value != nil {
+				values[field.Name] = fmt.Sprint(field.Value)
+			}
 		}
 	}
 	return values

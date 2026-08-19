@@ -28,6 +28,12 @@ import (
 // so regardless of done, exactly as the callback-based onDone/onGiveUp
 // both do.
 //
+// onProgress, when non-nil, is called with each still-running poll's entity
+// (the verdictContinue case), so a one-shot CLI can print each progress
+// step to stderr as it arrives -- the blocking analogue of Start's
+// OnProgress callback. It is never called for the terminal polls (done or
+// give-up), since those return instead of looping.
+//
 // err is currently always nil. A failed poll is news about the network,
 // not the job, and is never an error -- the watch keeps asking until the
 // deadline, the same rule poll.go follows. The return value is reserved so
@@ -51,7 +57,7 @@ import (
 // the single-threaded one-shot CLI this exists for; a future caller that
 // needs cancellation or a live-status read alongside a blocking watch
 // would need that wiring added first.
-func (l *Live) WaitForLive(be backend.Backend, origin Origin, result ActionOutcome) (siren.Entity, bool, error) {
+func (l *Live) WaitForLive(be backend.Backend, origin Origin, result ActionOutcome, onProgress func(siren.Entity)) (siren.Entity, bool, error) {
 	if !ShouldWatch(result) {
 		return siren.Entity{}, false, nil
 	}
@@ -72,7 +78,7 @@ func (l *Live) WaitForLive(be backend.Backend, origin Origin, result ActionOutco
 		startedAt: time.Now(),
 	}
 	l.logStart(href, w)
-	return l.blockPoll(be, w)
+	return l.blockPoll(be, w, onProgress)
 }
 
 // blockPoll is WaitForLive's synchronous poll loop, split out so
@@ -85,7 +91,7 @@ func (l *Live) WaitForLive(be backend.Backend, origin Origin, result ActionOutco
 // decision lives in blockHandle/blockDeadlineDecision so this loop stays
 // short and so the budget-then-deadline ordering cannot drift from
 // poll.go's checkDeadline.
-func (l *Live) blockPoll(be backend.Backend, w *watch) (siren.Entity, bool, error) {
+func (l *Live) blockPoll(be backend.Backend, w *watch, onProgress func(siren.Entity)) (siren.Entity, bool, error) {
 	for {
 		resp, err := l.http.Get(be, w.href)
 		if err != nil {
@@ -104,6 +110,9 @@ func (l *Live) blockPoll(be backend.Backend, w *watch) (siren.Entity, bool, erro
 		entity := siren.EntityFromJSON(resp.Entity)
 		switch v, result := l.blockHandle(w, entity); v {
 		case verdictContinue:
+			if onProgress != nil {
+				onProgress(entity)
+			}
 			time.Sleep(PollInterval)
 		case verdictDone:
 			return result, true, nil

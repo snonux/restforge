@@ -139,7 +139,7 @@ func (a *Action) invoke(be backend.Backend, entity siren.Entity, confirmed bool,
 		return InvokeRefused{Reason: "not offered"}
 	}
 
-	switch filled := FillFields(*act, confirmed, spoken).(type) {
+	switch filled := FillFields(*act, confirmed, spoken, a.userValues).(type) {
 	case FieldsRefused:
 		a.pending = nil
 		return InvokeRefused{Reason: filled.Reason}

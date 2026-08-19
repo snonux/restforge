@@ -33,10 +33,10 @@ func fixtureBrewAction() siren.Action {
 func TestFieldValuesChecksboxCarriesConfirmationNotAServerDefault(t *testing.T) {
 	act := fixtureCoolAction()
 
-	if got, want := fieldValues(act, true, nil), (map[string]string{"confirm": "true"}); !reflect.DeepEqual(got, want) {
+	if got, want := fieldValues(act, true, nil, nil), (map[string]string{"confirm": "true"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("fieldValues(confirmed=true) = %v, want %v", got, want)
 	}
-	if got, want := fieldValues(act, false, nil), (map[string]string{"confirm": "false"}); !reflect.DeepEqual(got, want) {
+	if got, want := fieldValues(act, false, nil, nil), (map[string]string{"confirm": "false"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("fieldValues(confirmed=false) = %v, want %v", got, want)
 	}
 }
@@ -44,7 +44,7 @@ func TestFieldValuesChecksboxCarriesConfirmationNotAServerDefault(t *testing.T) 
 func TestFieldValuesActionWithNoFieldsFillsNothing(t *testing.T) {
 	act := fixtureBrewAction()
 
-	got := fieldValues(act, true, nil)
+	got := fieldValues(act, true, nil, nil)
 	if len(got) != 0 {
 		t.Errorf("fieldValues = %v, want empty", got)
 	}

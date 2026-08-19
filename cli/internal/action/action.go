@@ -96,6 +96,13 @@ type Action struct {
 	// enough to answer a server that comes back 409 after it -- see
 	// confirmedRetry and Action.retryable.
 	confirmedRetry *confirmedRetry
+
+	// userValues is the caller-supplied field map the one-shot CLI passes
+	// via --field key=value. It fills a field ahead of FillFields's
+	// missing-required decision, so a required field the caller supplied
+	// is never asked for out loud. Interactive callers (internal/session)
+	// leave it nil; a one-shot caller sets it through [WithUserValues].
+	userValues map[string]string
 }
 
 // Option configures an Action built by New. Mirrors httpclient.Option: the
@@ -118,6 +125,17 @@ func WithLog(logf func(message string)) Option {
 // confirmationRetryTTL without sleeping a real minute.
 func WithClock(now func() time.Time) Option {
 	return func(a *Action) { a.now = now }
+}
+
+// WithUserValues sets the caller-supplied field values the one-shot CLI
+// passes via --field key=value. They take precedence over a field's
+// server-declared default (so a caller can override it) but not over a
+// checkbox confirmation or a value asked for out loud (those are the
+// user's explicit answers to a question, not a default to override). A
+// one-shot Action is built per invocation, so this is set once per act.
+// Interactive callers do not set it.
+func WithUserValues(values map[string]string) Option {
+	return func(a *Action) { a.userValues = values }
 }
 
 // New builds an Action that sends requests through client, with the

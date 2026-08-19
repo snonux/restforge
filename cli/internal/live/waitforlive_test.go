@@ -18,7 +18,7 @@ import (
 func TestWaitForLiveNothingToWatchReturnsImmediately(t *testing.T) {
 	e := newEnv()
 	// 200 with a state that is not "running": not something to follow.
-	_, done, err := e.live.WaitForLive(testBackend(), testOrigin(), job(map[string]any{"state": "done"}, 200))
+	_, done, err := e.live.WaitForLive(testBackend(), testOrigin(), job(map[string]any{"state": "done"}, 200), nil)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -37,7 +37,7 @@ func TestWaitForLiveNothingToFollowReturnsImmediately(t *testing.T) {
 	origin := live.Origin{
 		Entity: siren.Entity{Links: []siren.Link{{Rel: []string{"self"}, Href: "/"}}},
 	}
-	_, done, err := e.live.WaitForLive(testBackend(), origin, job(map[string]any{"state": "running"}, 202))
+	_, done, err := e.live.WaitForLive(testBackend(), origin, job(map[string]any{"state": "running"}, 202), nil)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -57,6 +57,7 @@ func TestWaitForLiveDoneOnFirstPoll(t *testing.T) {
 		testBackend(),
 		testOrigin(),
 		job(map[string]any{"state": "running", "id": float64(7)}, 202),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
@@ -83,6 +84,7 @@ func TestWaitForLiveGivesUpWhenNothingReportsProgress(t *testing.T) {
 		testBackend(),
 		testOrigin(),
 		job(map[string]any{"state": "running", "id": float64(7)}, 202),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
