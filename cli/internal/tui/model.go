@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -58,6 +60,15 @@ type Model struct {
 	// it opens.
 	settings settingsModel
 
+	// valuePrompt is the ValuePrompt screen's own state -- the one
+	// bubbles/textinput.Model a session.ValueQuestion needs (valueprompt.go).
+	// Resynced from Session.Question() everywhere documentModel resyncs from
+	// Session.Document() (see valuePromptModel.syncFromSession's own doc
+	// comment for why): a ConfirmQuestion carries nothing to hold between
+	// renders, so it has no equivalent field here -- see confirm.go's own
+	// doc comment.
+	valuePrompt valuePromptModel
+
 	showHelp bool
 	quitting bool
 
@@ -71,13 +82,14 @@ type Model struct {
 // it either.
 func New(sess *session.Session) Model {
 	return Model{
-		session:  sess,
-		base:     screenHome,
-		keys:     newKeyMap(),
-		help:     help.New(),
-		home:     newHomeModel(),
-		document: newDocumentModel(),
-		settings: newSettingsModel(nil),
+		session:     sess,
+		base:        screenHome,
+		keys:        newKeyMap(),
+		help:        help.New(),
+		home:        newHomeModel(),
+		document:    newDocumentModel(),
+		settings:    newSettingsModel(nil),
+		valuePrompt: newValuePromptModel(),
 	}
 }
 
@@ -116,6 +128,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// cached copy" contract internal/session's own package comment
 		// describes for a caller of its methods.
 		m.document = m.document.syncRows(m.session.Document())
+		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
 		return m, nil
 	case homeLoadedMsg:
 		m.home = m.home.applyLoaded(msg)
@@ -123,10 +136,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case homeOpenedMsg:
 		m.base = screenDocument
 		m.document = m.document.syncRows(m.session.Document())
+		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
 		return m, nil
 	case homeQuickRanMsg:
 		m = m.applyQuickRan(msg)
 		m.document = m.document.syncRows(m.session.Document())
+		// RunQuick (session/quick.go) may already have called askAction for
+		// an action shortcut, synchronously setting Session.Question() to a
+		// ConfirmQuestion or ValueQuestion before this message ever arrives
+		// -- resync the same way sessionUpdatedMsg does, so a shortcut gets
+		// exactly the confirmation flow a hand-reached action would.
+		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
 		return m, nil
 	case settingsSavedMsg:
 		return m.applySettingsSaved(msg)
@@ -171,11 +191,11 @@ func (m Model) View() string {
 
 // handleKey applies the three global bindings every screen shares -- see
 // keys.go -- before falling back to whichever screen is current. Home
-// (updateHome, home_update.go) and Document (updateDocument,
-// document_update.go) are the two screens with their own key handling so
-// far; a screen-specific key for one of the screens still pending
-// (Confirm's yes/no, ValuePrompt's submit, and so on) is that screen's own
-// task to add to this same fallback.
+// (updateHome, home_update.go), Document (updateDocument,
+// document_update.go), Settings (updateSettings, settings_update.go),
+// Confirm (updateConfirm, confirm_update.go) and ValuePrompt
+// (updateValuePrompt, valueprompt_update.go) are the screens with their own
+// key handling so far.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -186,14 +206,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, m.keys.Back):
 		m = m.handleBack()
-		// handleBack may have popped Session's own navigation stack (or
-		// dismissed Detail, once task 731 sets it) -- resync the Document
-		// screen's row list from whatever Session shows now, the same
-		// call every other Session-mutating branch in Update makes. See
-		// documentModel.syncRows's own doc comment for why this is cheap
-		// even when nothing actually changed (Detail dismissed, or
-		// nothing left to pop).
+		// handleBack may have popped Session's own navigation stack,
+		// dismissed Detail (once task 731 sets it) or declined a pending
+		// question -- resync both the Document screen's row list and the
+		// ValuePrompt screen's input from whatever Session shows now, the
+		// same call every other Session-mutating branch in Update makes.
+		// See documentModel.syncRows's own doc comment for why this is
+		// cheap even when nothing actually changed.
 		m.document = m.document.syncRows(m.session.Document())
+		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
 		return m, nil
 	}
 	switch m.currentScreen() {
@@ -201,6 +222,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateHome(msg)
 	case screenDocument:
 		return m.updateDocument(msg)
+	case screenConfirm:
+		return m.updateConfirm(msg)
+	case screenValuePrompt:
+		return m.updateValuePrompt(msg)
 	case screenSettings:
 		return m.updateSettings(msg)
 	}
@@ -208,19 +233,31 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleBack applies the global back binding: dismiss a Detail overlay
-// first (it is on top of everything else -- see deriveScreen), otherwise
+// first (it is on top of everything else -- see deriveScreen), then decline
+// a pending Confirm/ValuePrompt question (Session.Answer(false)) -- mirrors
+// confirmation_sheet.dart's ConfirmationSheetHost answering false on every
+// dismissal that is not the sheet's own Confirm/Send button (see that
+// file's module comment), translated here to "the shell's own Back key is
+// every dismissal this screen does not handle itself" since a terminal has
+// no tap-outside/drag/system-back-gesture equivalent to unify -- otherwise
 // pop Session's navigation stack if there is anywhere to pop to, otherwise
-// return to Home. Both DismissDetail and CanGoBack/Back are called
-// directly, never through sessionCmd: none of the three perform any I/O --
-// DismissDetail only clears a field already in hand, and Back only pops an
-// already-fetched frame off Session's own stack (internal/nav.Nav.Back)
-// rather than fetching anything -- so wrapping them in a tea.Cmd would add
-// a goroutine hop for no reason. Compare Session.Refresh or Session.Activate
-// on a render.FetchTarget, either of which does reach the network and so
-// must go through sessionCmd.
+// return to Home. Answer(false), DismissDetail and CanGoBack/Back are all
+// called directly, never through sessionCmd: none of the three perform any
+// I/O -- Answer(false) only clears the pending question without sending
+// anything (action.Answer's own contract), DismissDetail only clears a
+// field already in hand, and Back only pops an already-fetched frame off
+// Session's own stack (internal/nav.Nav.Back) rather than fetching anything
+// -- so wrapping any of them in a tea.Cmd would add a goroutine hop for no
+// reason. Compare Session.Refresh or Session.Activate on a
+// render.FetchTarget, either of which does reach the network and so must go
+// through sessionCmd.
 func (m Model) handleBack() Model {
 	if m.session.Detail() != nil {
 		m.session.DismissDetail()
+		return m
+	}
+	if m.session.Question() != nil {
+		m.session.Answer(false)
 		return m
 	}
 	if m.currentScreen() == screenSettings && m.settings.mode == settingsModeEdit {
@@ -247,24 +284,56 @@ func (m Model) currentScreen() screen {
 }
 
 // currentScreenView renders the current screen's body: Home's own view
-// (home.go), Document's own view (document.go) and Settings' own view
-// (settings.go) once one of them is current, renderPlaceholder for every
-// screen still pending -- see screen.go for which task fills each one in.
-// Grown one case at a time as each screen task lands, rather than a closed
-// switch with a default-panics canary (render.RowTarget and
+// (home.go), Document's own view (document.go), Confirm's own view
+// (confirm.go), ValuePrompt's own view (valueprompt.go) and Settings' own
+// view (settings.go) once one of them is current, renderPlaceholder for
+// Detail, the one screen still pending -- see screen.go for which task
+// fills it in. Grown one case at a time as each screen task lands, rather
+// than a closed switch with a default-panics canary (render.RowTarget and
 // session.SessionQuestion's own convention): unlike those, "not yet
-// implemented" is this switch's deliberate, temporary default for Confirm,
-// ValuePrompt and Detail, not a bug.
+// implemented" is this switch's deliberate, temporary default for Detail,
+// not a bug.
 func (m Model) currentScreenView() string {
 	switch m.currentScreen() {
 	case screenHome:
 		return m.home.View()
 	case screenDocument:
 		return m.document.View(m.session)
+	case screenConfirm:
+		return confirmView(m.confirmQuestion())
+	case screenValuePrompt:
+		return m.valuePrompt.View(m.valueQuestion())
 	case screenSettings:
 		return m.settings.View()
 	}
 	return renderPlaceholder(m.currentScreen())
+}
+
+// confirmQuestion and valueQuestion re-assert Session.Question() to the
+// concrete type deriveScreen already established when it picked
+// screenConfirm/screenValuePrompt as current -- panicking, rather than
+// falling back to a placeholder, on a mismatch: deriveScreen and this
+// switch must always agree on what session.SessionQuestion's dynamic type
+// means, so disagreement is this package's own bug, not a state a caller
+// can hit by pressing the wrong key. Mirrors the default-panics-as-canary
+// convention every switch over a closed interface in this codebase follows
+// (see internal/action/ask.go's AskOutcome doc comment) -- split into two
+// small helpers, rather than inlined in currentScreenView, so each stays a
+// one-line call at its use site.
+func (m Model) confirmQuestion() session.ConfirmQuestion {
+	q, ok := m.session.Question().(session.ConfirmQuestion)
+	if !ok {
+		panic(fmt.Sprintf("tui: screenConfirm current but Question() is %T", m.session.Question()))
+	}
+	return q
+}
+
+func (m Model) valueQuestion() session.ValueQuestion {
+	q, ok := m.session.Question().(session.ValueQuestion)
+	if !ok {
+		panic(fmt.Sprintf("tui: screenValuePrompt current but Question() is %T", m.session.Question()))
+	}
+	return q
 }
 
 // renderPlaceholder is what every screen shows until its own task lands:

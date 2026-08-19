@@ -60,11 +60,17 @@ type sessionUpdatedMsg struct{}
 // sessionUpdatedMsg at all -- it is a second, independent source of
 // concurrent access to the same *Session this Model holds, and is exactly
 // the hazard internal/session's package comment flags as unsolved by that
-// package and left to internal/tui. It is still unsolved here: no screen
-// in this shell yet starts a watchable action, so nothing here yet
-// triggers it. Whichever screen task first does (Confirm/ValuePrompt,
-// task 631, or the live-progress banner, task 831) must adapt it -- for
-// example by giving internal/live's Live a createTimer that posts a
+// package and left to internal/tui. It is still unsolved here: both
+// activateDocumentSelection (document_update.go, a safe-method action
+// invoked straight through Session.Activate) and updateConfirm/
+// updateValuePrompt's calls into Session.Answer/AnswerValue
+// (confirm_update.go, valueprompt_update.go, task 631) can reach a
+// watchable outcome and so can already start a callback watch today,
+// whether or not any screen renders what it reports. The live-progress
+// banner (task 831, which depends on internal/live via Session and is the
+// first screen to actually read Session.IsLive/Notice on a poll's behalf)
+// is where this must be adapted -- for example by giving internal/live's
+// Live a createTimer that posts a
 // tea.Msg to the running tea.Program instead of firing its callback
 // directly on a bare timer goroutine, so the mutation is funnelled back
 // through Update the same way sessionCmd funnels an ordinary request/

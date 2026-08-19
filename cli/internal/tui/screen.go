@@ -27,12 +27,13 @@ const (
 
 	// screenConfirm is the yes/no modal for a session.ConfirmQuestion.
 	// Entered automatically whenever Session.Question() holds one -- see
-	// deriveScreen -- never navigated to directly. Filled in by task 631.
+	// deriveScreen -- never navigated to directly. Rendered by confirmView
+	// (confirm.go, task 631).
 	screenConfirm
 
 	// screenValuePrompt is the modal asking for a value out loud, for a
 	// session.ValueQuestion. Entered automatically -- see screenConfirm.
-	// Filled in by task 631.
+	// Rendered by valuePromptModel (valueprompt.go, task 631).
 	screenValuePrompt
 
 	// screenDetail is the full-text reading view for Session.Detail().

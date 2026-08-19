@@ -25,6 +25,14 @@ import (
 // satisfy action.New's parameter type.
 type fakeClient struct {
 	routes map[string]map[string]any
+
+	// requestFn, when set, is what Request delegates to -- a test that
+	// actually exercises Session.Answer/AnswerValue (confirm_test.go,
+	// valueprompt_test.go) supplies one; every other test leaves it nil and
+	// keeps the original "not used by these tests" failure below, so a
+	// call reaching Request unexpectedly still fails loudly rather than
+	// silently succeeding.
+	requestFn func(be backend.Backend, href, method string, fields map[string]string) (httpclient.HTTPResponse, error)
 }
 
 func (f *fakeClient) Get(be backend.Backend, href string) (httpclient.HTTPResponse, error) {
@@ -36,6 +44,9 @@ func (f *fakeClient) Get(be backend.Backend, href string) (httpclient.HTTPRespon
 }
 
 func (f *fakeClient) Request(be backend.Backend, href, method string, fields map[string]string) (httpclient.HTTPResponse, error) {
+	if f.requestFn != nil {
+		return f.requestFn(be, href, method, fields)
+	}
 	return httpclient.HTTPResponse{}, &failure.Failure{Kind: failure.Client, Message: "fakeClient: Request not used by these tests"}
 }
 

@@ -48,14 +48,29 @@
 //     reasoning, including how this screen's two-mode shape differs from
 //     flutter/lib/screens/settings_screen.dart's single all-cards-at-once
 //     view and why.
+//   - confirm.go and confirm_update.go are the Confirm screen: the yes/no
+//     modal for a session.ConfirmQuestion, entered automatically whenever
+//     Session.Question() holds one (deriveScreen, derive.go) and answered
+//     with an explicit 'y' or 'n' key press -- never a bare Enter, and never
+//     a timeout -- through Session.Answer. A pure function of
+//     Session.Question() with no state of its own to carry between renders,
+//     unlike ValuePrompt below.
+//   - valueprompt.go and valueprompt_update.go are the ValuePrompt screen:
+//     the "what value" follow-up for a session.ValueQuestion, one
+//     bubbles/textinput.Model submitted with Enter through
+//     Session.AnswerValue -- including an empty submission, which
+//     internal/action.AnswerValue's own guard turns into "nothing sent"
+//     rather than this screen inventing that check a second time. Both this
+//     screen and Confirm decline the pending question (Session.Answer(false))
+//     on the shell's global Back key rather than defining a cancel binding
+//     of their own -- see Model.handleBack.
 //
 // # What this package deliberately does not do yet
 //
-// Confirm and ValuePrompt (session.SessionQuestion's two concrete answers)
-// and Detail (Session.Detail()) still do nothing but name themselves -- each
-// is a placeholder task 631/731 (see this project's task tracker) fills in.
-// This package's job is the shell around every screen -- the Model, the
+// Detail (Session.Detail()) still does nothing but name itself -- it is a
+// placeholder task 731 (see this project's task tracker) fills in. This
+// package's job is the shell around every screen -- the Model, the
 // navigation between screen states, the shared styles and the async pattern
-// -- plus, now, Home, Document and Settings, the three screens that shell
-// exists to show.
+// -- plus, now, every screen that shell exists to show except Detail: Home,
+// Document, Confirm, ValuePrompt and Settings.
 package tui

@@ -29,11 +29,12 @@ config via [BurntSushi/toml](https://github.com/BurntSushi/toml).
 Recorded against the shared fixture Siren API with
 [VHS](https://github.com/charmbracelet/vhs) — `just record-demo`
 (`tools/record-demo.sh` + `tools/demo.tape`) reproduces it. The confirm/watch/
-re-fetch moments run through `restforge act`, not the TUI: as of this
-recording the TUI's Confirm/ValuePrompt/Detail overlay screens still render a
-placeholder (see "What it does today" below) — they share the same
-`internal/session` state machine, so the recording will gain a TUI-driven
-version of that part once those screens land.
+re-fetch moments run through `restforge act`, not the TUI: this recording
+predates the TUI's own Confirm and ValuePrompt overlay screens, which are now
+implemented (see "What it does today" below) — only the Detail overlay
+screen still renders a placeholder. Confirm/ValuePrompt share the same
+`internal/session` state machine `restforge act` does, so the recording will
+gain a TUI-driven version of that part once it is re-recorded.
 
 ## What it does today
 
@@ -62,14 +63,13 @@ version of that part once those screens land.
   the same TOML file `restforge get`/`restforge act` read.
 
 The TUI's Home (backend/shortcut picker), Document (rendering a fetched
-entity) and Settings (backend editor) screens are implemented. Confirming an
-unsafe action, answering a required-field prompt, and the full-text detail
-view are **not yet interactive in the TUI** — those screens currently render
-a placeholder. Until they land, drive a confirm-or-answer flow through
-`restforge act --yes` / `--value` instead; the underlying `internal/session`
+entity), Confirm (yes/no on an unsafe action), ValuePrompt (a required-field
+prompt) and Settings (backend editor) screens are implemented. The full-text
+detail view is **not yet interactive in the TUI** — that screen currently
+renders a placeholder. Until it lands, `restforge get` prints a document's
+full text unabridged either way; the underlying `internal/session`
 coordinator both the TUI and the one-shot commands share already implements
-the full confirm/answer/watch state machine, only the TUI's own screens for
-it are outstanding.
+Detail's own state, only the TUI's own screen for it is outstanding.
 
 ## Requirements
 
