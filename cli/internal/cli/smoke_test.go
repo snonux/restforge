@@ -66,7 +66,7 @@ func TestMain(m *testing.M) {
 	}
 	binDir = dir
 	code := m.Run()
-	os.RemoveAll(binDir)
+	_ = os.RemoveAll(binDir) // best-effort cleanup; a failure leaves a temp dir behind
 	os.Exit(code)
 }
 

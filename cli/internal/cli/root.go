@@ -55,6 +55,7 @@ func newRoot() *cobra.Command {
 
 	wireRootFlags(root, g)
 	root.AddCommand(newVersionCmd(g))
+	root.AddCommand(newGetCmd(g))
 	return root
 }
 
@@ -86,7 +87,9 @@ func wireRootFlags(root *cobra.Command, g *globalFlags) {
 			// Match the existing seam: ConfigEnvVar already overrides
 			// config.Path(), so --config just sets that env var for the
 			// process, rather than threading a parallel path everywhere.
-			os.Setenv(config.ConfigEnvVar, g.configPath)
+			// Setenv can only fail on a malformed name; ConfigEnvVar is a
+			// fixed valid name, so the error is not actionable here.
+			_ = os.Setenv(config.ConfigEnvVar, g.configPath)
 		}
 		if !validOutputs[g.output] {
 			return usageErrorf("invalid --output %q (want text or json)", g.output)
@@ -109,16 +112,20 @@ func runTUI() error {
 // returns the process exit code the binary should exit with. It is the only
 // entry point main.go calls, keeping main.go to argument plumbing.
 func Run(args []string) int {
-	return run(newRoot(), args, os.Stderr)
+	return run(newRoot(), args, os.Stdout, os.Stderr)
 }
 
-// run executes cmd against args, printing any error to errs itself (since
-// the root silences Cobra's own error/usage printing), and returns the exit
-// code. Split out from [Run] so a test can wire its own err sink.
-func run(cmd *cobra.Command, args []string, errs io.Writer) int {
+// run executes cmd against args, routing command output to out and any error
+// to errs (since the root silences Cobra's own error/usage printing), and
+// returns the exit code. Split out from [Run] so a test can wire its own
+// out/err sinks and assert on captured output.
+func run(cmd *cobra.Command, args []string, out, errs io.Writer) int {
 	cmd.SetArgs(args)
+	cmd.SetOut(out)
 	if err := cmd.Execute(); err != nil {
-		fmt.Fprintln(errs, err)
+		// If reporting the error itself fails (a broken stderr), there is
+		// nothing left to do but return the exit code the error maps to.
+		_, _ = fmt.Fprintln(errs, err)
 		return ExitCode(err)
 	}
 	return ExitOK

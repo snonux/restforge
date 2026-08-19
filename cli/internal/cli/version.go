@@ -22,8 +22,8 @@ func newVersionCmd(g *globalFlags) *cobra.Command {
 			"placeholder until the versioning task wires the real semver.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", version.Version)
-			return nil
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\n", version.Version)
+			return err
 		},
 	}
 }
