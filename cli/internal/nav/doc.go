@@ -90,6 +90,21 @@
 // send the wrong backend's auth secret. followStart's own doc comment
 // covers this in full.
 //
+// # A superseded fetch is also actually cancelled (n31)
+//
+// The generation guard above only ever discarded a superseded fetch's
+// result once it landed -- the HTTP round trip itself kept running
+// regardless, tying up a goroutine and a socket for up to
+// httpclient.GetTimeout/ActionTimeout for an answer nobody would ever look
+// at. Since n31, every fetch this package starts runs under its own
+// context.WithCancel (see fetch.go's beginFetchLocked), and every call that
+// bumps generation also cancels whatever context the fetch it is
+// superseding was issued under (supersedeLocked) -- so httpGetter.GetContext
+// (httpclient.Client.GetContext in production) can actually abort the
+// round trip in flight, not just have its eventual result thrown away by
+// the generation check, which remains as a backstop for a round trip that
+// was already past the point of cancelling by the time it was superseded.
+//
 // # What this package does not own
 //
 // Left to their own packages exactly as nav_service.dart's own module

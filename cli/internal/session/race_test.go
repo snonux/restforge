@@ -18,6 +18,7 @@
 package session_test
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +45,15 @@ type slowClient struct {
 }
 
 func (c *slowClient) Get(be backend.Backend, href string) (httpclient.HTTPResponse, error) {
+	time.Sleep(c.delay)
+	return c.fakeClient.Get(be, href)
+}
+
+// GetContext is nav's httpGetter seam (see n31). ctx is ignored here, same
+// as tui's fakeClient.GetContext: this test's race is about concurrent
+// reads during Session's own field mutations, not about cancellation --
+// see internal/nav's own tests for cancellation proof.
+func (c *slowClient) GetContext(_ context.Context, be backend.Backend, href string) (httpclient.HTTPResponse, error) {
 	time.Sleep(c.delay)
 	return c.fakeClient.Get(be, href)
 }

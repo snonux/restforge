@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,6 +24,12 @@ import (
 // navigation (OpenBackend, Activate on a FetchTarget, Back), never an
 // action, so Request is never actually exercised -- it exists only to
 // satisfy action.New's parameter type.
+//
+// GetContext (nav's seam, since n31) and Get (live's, unchanged by n31 --
+// see this repo's n31 follow-up task for wiring live through a context too)
+// both exist here for the same reason Get and Request already did: one
+// fake, several structurally distinct interfaces. Neither of these tests
+// exercises cancellation, so GetContext ignores ctx and just delegates.
 type fakeClient struct {
 	routes map[string]map[string]any
 
@@ -41,6 +48,13 @@ func (f *fakeClient) Get(be backend.Backend, href string) (httpclient.HTTPRespon
 		return httpclient.HTTPResponse{}, &failure.Failure{Kind: failure.Client, Message: "fakeClient: no route for " + href}
 	}
 	return httpclient.HTTPResponse{Status: 200, URL: href, Entity: doc}, nil
+}
+
+// GetContext is nav's httpGetter seam (see n31). ctx is ignored: these
+// tests never supersede a fetch mid-flight, so there is nothing to observe
+// cancelling it -- see internal/nav's own tests for that proof.
+func (f *fakeClient) GetContext(_ context.Context, be backend.Backend, href string) (httpclient.HTTPResponse, error) {
+	return f.Get(be, href)
 }
 
 func (f *fakeClient) Request(be backend.Backend, href, method string, fields map[string]string) (httpclient.HTTPResponse, error) {

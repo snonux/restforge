@@ -22,8 +22,10 @@
 package nav_test
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/snonux/restforge/cli/internal/backend"
 	"github.com/snonux/restforge/cli/internal/failure"
@@ -96,10 +98,15 @@ type fakeClient struct {
 	// nil and gets routes/unreachable's usual *failure.Failure errors.
 	plainErr error
 
-	// block, when set, is called with the resolved target as Get is
-	// entered, before routes is consulted -- the hook the "state
-	// transitions" tests use to hold a fetch in flight.
-	block func(target string)
+	// block, when set, is called with the request's ctx and the resolved
+	// target as GetContext is entered, before routes is consulted -- the
+	// hook the "state transitions" tests use to hold a fetch in flight.
+	// ctx is passed through (rather than only target) so the n31
+	// cancellation tests can assert on it -- e.g. block on ctx.Done()
+	// instead of on a hand-rolled gate channel, to prove Nav's own
+	// supersedeLocked actually cancelled it rather than merely bumping
+	// generation.
+	block func(ctx context.Context, target string)
 }
 
 func newFakeClient() *fakeClient {
@@ -109,11 +116,11 @@ func newFakeClient() *fakeClient {
 	}}
 }
 
-func (f *fakeClient) Get(be backend.Backend, href string) (httpclient.HTTPResponse, error) {
+func (f *fakeClient) GetContext(ctx context.Context, be backend.Backend, href string) (httpclient.HTTPResponse, error) {
 	target := urlresolve.Resolve(href, be.BaseURL)
 	f.requested = append(f.requested, "GET "+target)
 	if f.block != nil {
-		f.block(target)
+		f.block(ctx, target)
 	}
 	if f.plainErr != nil {
 		return httpclient.HTTPResponse{}, f.plainErr
@@ -499,7 +506,7 @@ func TestFetchGoesThroughLoadingBeforeOk(t *testing.T) {
 
 	started := make(chan struct{})
 	gate := make(chan struct{})
-	fake.block = func(string) {
+	fake.block = func(_ context.Context, _ string) {
 		close(started)
 		<-gate
 	}
@@ -531,7 +538,7 @@ func TestDocumentUntouchedWhileFetchInFlight(t *testing.T) {
 
 	started := make(chan struct{})
 	gate := make(chan struct{})
-	fake.block = func(string) {
+	fake.block = func(_ context.Context, _ string) {
 		close(started)
 		<-gate
 	}
@@ -602,7 +609,7 @@ func TestBackDuringInFlightFetchIsNotOverwrittenByStaleFetch(t *testing.T) {
 
 	started := make(chan struct{})
 	gate := make(chan struct{})
-	fake.block = func(string) {
+	fake.block = func(_ context.Context, _ string) {
 		close(started)
 		<-gate
 	}
@@ -654,7 +661,7 @@ func TestBackDuringInFlightFetchDiscardsStaleFailureToo(t *testing.T) {
 
 	started := make(chan struct{})
 	gate := make(chan struct{})
-	fake.block = func(string) {
+	fake.block = func(_ context.Context, _ string) {
 		close(started)
 		<-gate
 	}
@@ -702,7 +709,7 @@ func TestAdoptDuringInFlightFetchDiscardsStaleFetch(t *testing.T) {
 
 	started := make(chan struct{})
 	gate := make(chan struct{})
-	fake.block = func(string) {
+	fake.block = func(_ context.Context, _ string) {
 		close(started)
 		<-gate
 	}
@@ -752,7 +759,7 @@ func TestOpenEmbeddedDuringInFlightFetchDiscardsStaleFetch(t *testing.T) {
 
 	started := make(chan struct{})
 	gate := make(chan struct{})
-	fake.block = func(string) {
+	fake.block = func(_ context.Context, _ string) {
 		close(started)
 		<-gate
 	}
@@ -801,7 +808,7 @@ func TestFollowStartAfterSupersedingOpenRootUsesOriginalBackend(t *testing.T) {
 
 	started := make(chan struct{})
 	gate := make(chan struct{})
-	fake.block = func(target string) {
+	fake.block = func(_ context.Context, target string) {
 		if target != base+"shelves" {
 			return // only gate followStart's own fetch, not either root
 		}
@@ -868,7 +875,7 @@ func TestSecondOpenRootForDifferentBackendWinsOverSlowerFirst(t *testing.T) {
 
 	started := make(chan struct{})
 	gate := make(chan struct{})
-	fake.block = func(target string) {
+	fake.block = func(_ context.Context, target string) {
 		if target != base {
 			return // only the first backend's root fetch is gated
 		}
@@ -904,6 +911,155 @@ func TestSecondOpenRootForDifferentBackendWinsOverSlowerFirst(t *testing.T) {
 	if n.State() != nav.StateOK {
 		t.Errorf("State() after stale OpenRoot landed = %v, want StateOK", n.State())
 	}
+}
+
+// --- n31: a superseded fetch is actually cancelled, not just discarded ----
+//
+// The tests above (TestBackDuringInFlightFetchIsNotOverwrittenByStaleFetch
+// and its siblings) prove the generation guard discards a stale response
+// once it lands. They do not prove the underlying HTTP round trip was ever
+// asked to stop -- before n31, it always ran to completion (or its own
+// httpclient timeout) regardless of Back/OpenRoot/Adopt/OpenEmbedded/a
+// second Fetch superseding it, wasting a goroutine and a socket for up to
+// httpclient.GetTimeout/ActionTimeout. These tests close that gap: each
+// blocks a fetch in flight, waits on the ctx GetContext was actually called
+// with, and asserts it is cancelled by the superseding call -- not just
+// that generation moved on.
+
+// TestBackCancelsInFlightFetchContext proves Back (via supersedeLocked)
+// cancels an in-flight fetch's context, not just its own generation bump.
+func TestBackCancelsInFlightFetchContext(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	n.OpenRoot(testBackend())
+	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
+	n.Fetch(target.Href, "shelves") // stack: [root, shelves]
+	fake.routes[base+"deep"] = map[string]any{
+		"title": "Deep",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/deep"}},
+	}
+
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	fake.block = func(ctx context.Context, _ string) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			close(cancelled)
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.Fetch(base+"deep", "deep")
+	}()
+	<-started // "deep" fetch is in flight, blocked on its own ctx
+
+	n.Back() // must cancel the "deep" fetch's ctx, not just bump generation
+
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Back did not cancel the in-flight fetch's context: the round trip is left running to its own timeout instead of being aborted")
+	}
+	<-done
+}
+
+// TestOpenRootCancelsPreviousInFlightFetchContext is the same proof for a
+// second OpenRoot superseding a first one still in flight -- the "worse
+// case" TestSecondOpenRootForDifferentBackendWinsOverSlowerFirst already
+// covers for discarding; here it also has to actually cancel.
+func TestOpenRootCancelsPreviousInFlightFetchContext(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+
+	other := backend.Backend{Name: "other", BaseURL: "https://other.example/", Secret: "x"}
+	fake.routes[other.BaseURL] = map[string]any{
+		"title": "Other root",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/"}},
+	}
+
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	fake.block = func(ctx context.Context, target string) {
+		if target != base {
+			return // only the first backend's root fetch is gated
+		}
+		close(started)
+		select {
+		case <-ctx.Done():
+			close(cancelled)
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.OpenRoot(testBackend()) // slow: backend "pantry"
+	}()
+	<-started // pantry's GET is in flight, blocked on its own ctx
+
+	n.OpenRoot(other) // must cancel pantry's ctx, not just bump generation
+
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second OpenRoot did not cancel the first's in-flight context: the round trip is left running to its own timeout instead of being aborted")
+	}
+	<-done
+}
+
+// TestSecondFetchCancelsFirstsInFlightContext covers the plain fetch()
+// path (Fetch/Refresh, via beginFetchLocked) rather than OpenRoot/Back's
+// own direct supersedeLocked calls -- the exact "a second Fetch fired
+// before the first returns" scenario fetch()'s own doc comment describes,
+// and the most ordinary way a fetch gets superseded in this app (a user
+// pressing a second row before the first one's fetch has landed).
+func TestSecondFetchCancelsFirstsInFlightContext(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	n.OpenRoot(testBackend())
+	fake.routes[base+"first"] = map[string]any{
+		"title": "First",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/first"}},
+	}
+	fake.routes[base+"second"] = map[string]any{
+		"title": "Second",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/second"}},
+	}
+
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	fake.block = func(ctx context.Context, target string) {
+		if target != base+"first" {
+			return // only the first Fetch's own GET is gated
+		}
+		close(started)
+		select {
+		case <-ctx.Done():
+			close(cancelled)
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.Fetch(base+"first", "first")
+	}()
+	<-started // the first Fetch's GET is in flight, blocked on its own ctx
+
+	n.Fetch(base+"second", "second") // must cancel the first's ctx
+
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second Fetch did not cancel the first's in-flight context: the round trip is left running to its own timeout instead of being aborted")
+	}
+	<-done
 }
 
 // --- small helpers -------------------------------------------------------

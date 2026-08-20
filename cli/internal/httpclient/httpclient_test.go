@@ -16,6 +16,7 @@
 package httpclient_test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -411,6 +412,120 @@ func TestLogStatusAndElapsedTimeAreLogged(t *testing.T) {
 		}
 	}
 	t.Errorf("no log line matched the status+elapsed pattern, got: %v", logs)
+}
+
+// --- n31: GetContext/RequestContext actually cancel, not just discard -----
+//
+// Get/Request keep working exactly as before (every test above uses them,
+// unchanged, under context.Background()). These tests are for the new
+// ctx-aware entry points nav.Nav uses: proving that cancelling the caller's
+// context aborts the round trip in flight instead of leaving it running to
+// its own httpclient.GetTimeout/ActionTimeout budget for nothing.
+
+// TestGetContextCancelledMidFlightAbortsWithoutWaitingForServer starts a
+// request against a handler that never replies, waits until the server has
+// actually received it, then cancels the caller's context and asserts
+// GetContext returns promptly with an error -- not after the production
+// GetTimeout (20s) or ActionTimeout (60s) budget New() defaults to, which
+// this test would time out long before if cancellation merely discarded the
+// result instead of aborting the request.
+func TestGetContextCancelledMidFlightAbortsWithoutWaitingForServer(t *testing.T) {
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		close(reached)
+		<-release
+	})
+	t.Cleanup(func() { close(release) })
+
+	c := httpclient.New()
+	be := testBackend(srv)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := c.GetContext(ctx, be, "/status")
+		errCh <- err
+	}()
+
+	<-reached // the request is in flight on the server, blocked
+	cancel()
+
+	select {
+	case err := <-errCh:
+		// Kind is asserted, not just "an error": classifyTransportError's
+		// own doc comment explains why a cancellation deliberately lands on
+		// Unreachable rather than a dedicated Kind (nav's generation guard
+		// already discards a cancelled call's result before ever looking at
+		// Kind) -- pinning it here catches a future regression that
+		// misclassifies cancellation as, say, Timeout instead.
+		if f := asFailure(t, err); f.Kind != failure.Unreachable {
+			t.Errorf("Kind = %v, want Unreachable", f.Kind)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("GetContext() did not return within 5s of ctx being cancelled -- the round trip was left running instead of being aborted")
+	}
+}
+
+// TestGetContextAlreadyCancelledNeverReachesTheServer is the negative
+// case: a context cancelled before the call is even made must fail fast
+// and never dial the server at all, the same guarantee
+// TestBadAuthHeaderNameIsConfigAndNoRequestIsEverSent proves for a config
+// problem.
+func TestGetContextAlreadyCancelledNeverReachesTheServer(t *testing.T) {
+	var calls int
+	srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		jsonHandler(http.StatusOK, "{}")(w, r)
+	})
+	c := httpclient.New()
+	be := testBackend(srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done before GetContext is ever called
+
+	_, err := c.GetContext(ctx, be, "/status")
+	if err == nil {
+		t.Fatal("expected an error for an already-cancelled context")
+	}
+	if calls != 0 {
+		t.Errorf("calls = %d, want 0: an already-cancelled context must not reach the network", calls)
+	}
+}
+
+// TestRequestContextCancelledMidFlightAbortsAnAction is
+// TestGetContextCancelledMidFlightAbortsWithoutWaitingForServer's sibling
+// for the POST/action path, proving RequestContext (not just its GetContext
+// wrapper) honours cancellation too.
+func TestRequestContextCancelledMidFlightAbortsAnAction(t *testing.T) {
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		close(reached)
+		<-release
+	})
+	t.Cleanup(func() { close(release) })
+
+	c := httpclient.New()
+	be := testBackend(srv)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := c.RequestContext(ctx, be, "/act", "POST", nil)
+		errCh <- err
+	}()
+
+	<-reached
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if f := asFailure(t, err); f.Kind != failure.Unreachable {
+			t.Errorf("Kind = %v, want Unreachable", f.Kind)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RequestContext() did not return within 5s of ctx being cancelled -- the round trip was left running instead of being aborted")
+	}
 }
 
 func TestLogSecretNeverReachesItEvenWhenTheRequestFails(t *testing.T) {

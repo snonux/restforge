@@ -1,6 +1,7 @@
 package nav
 
 import (
+	"context"
 	"sync"
 
 	"github.com/snonux/restforge/cli/internal/backend"
@@ -11,15 +12,24 @@ import (
 )
 
 // httpGetter is the minimal seam Nav needs against httpclient.Client --
-// just Get, the only method any method in this package calls.
+// just GetContext, the only method any method in this package calls.
 // *httpclient.Client already satisfies this structurally (Go's implicit
 // interface satisfaction), so production code passes one straight to New
 // with no adapter; a test substitutes a fake that implements just this one
 // method, sidestepping the need to run every case over a real (or
 // httptest) socket the way httpclient_test.go does -- that package is
 // testing the transport itself, this one is not.
+//
+// Takes a context (n31): every fetch this package starts is cancellable,
+// and the context Nav passes in is the one it cancels itself when a later
+// call supersedes that fetch -- see beginFetchLocked and
+// Nav.supersedeLocked. That is what lets a superseded fetch's underlying
+// HTTP round trip actually be aborted, not just have its result discarded
+// once it lands (which the generation guard already did before n31, and
+// still does as a backstop for a round trip that was already past
+// cancellation when it was superseded).
 type httpGetter interface {
-	Get(be backend.Backend, href string) (httpclient.HTTPResponse, error)
+	GetContext(ctx context.Context, be backend.Backend, href string) (httpclient.HTTPResponse, error)
 }
 
 // Nav owns the navigation stack and every fetch that changes it -- see the
@@ -62,6 +72,26 @@ type Nav struct {
 	// (like live's *watch) to compare against -- every mutating call
 	// shares the same n.stack/n.current instead.
 	generation uint64
+
+	// cancel, when non-nil, cancels the context the fetch currently in
+	// flight was issued under -- see beginFetchLocked and supersedeLocked.
+	// Bumping generation alone (which every superseding call already did
+	// before n31) only makes a stale response get discarded once it lands;
+	// storing and calling this is what actually aborts that response's HTTP
+	// round trip instead of leaving its goroutine and socket running for up
+	// to httpclient.GetTimeout/ActionTimeout for nothing -- see n31.
+	//
+	// Set only by beginFetchLocked (paired 1:1 with the generation it
+	// returns), and cleared in exactly two ways: supersedeLocked calling and
+	// nilling it when a later call invalidates the fetch it belongs to, or
+	// releaseCancelLocked calling and nilling it once that same fetch lands
+	// on its own -- still current, neither superseded nor invalidated. Every
+	// site that applies a fetch's outcome (pushIfCurrent, applyFailureIfCurrent,
+	// fetchAndApply's own success tail) calls releaseCancelLocked once it has
+	// confirmed gen is still current, so this never sits non-nil pointing at
+	// a fetch that has already finished -- non-nil always means "a fetch is
+	// genuinely in flight right now."
+	cancel context.CancelFunc
 }
 
 // New builds a Nav that performs its fetches through client. Starts with no

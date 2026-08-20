@@ -47,6 +47,7 @@
 package session_test
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -240,6 +241,14 @@ func newFakeClient() *fakeClient {
 
 func (f *fakeClient) Get(be backend.Backend, href string) (httpclient.HTTPResponse, error) {
 	return f.Request(be, href, "GET", nil)
+}
+
+// GetContext is nav's httpGetter seam (see n31). ctx is ignored: none of
+// this package's tests supersede a fetch mid-flight (that is
+// internal/nav's own test suite's job -- see its cancellation tests), so
+// there is nothing here to observe cancelling it.
+func (f *fakeClient) GetContext(_ context.Context, be backend.Backend, href string) (httpclient.HTTPResponse, error) {
+	return f.Get(be, href)
 }
 
 func (f *fakeClient) Request(be backend.Backend, href, method string, fields map[string]string) (httpclient.HTTPResponse, error) {

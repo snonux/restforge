@@ -141,19 +141,46 @@ func New(opts ...Option) *Client {
 }
 
 // Get is the common case, spelled out so callers do not pass a nil fields
-// map -- mirrors get in http.js / http_service.dart.
+// map -- mirrors get in http.js / http_service.dart. Uses context.Background(),
+// so the request runs to completion or its own timeout regardless of
+// anything the caller later does; a caller that has something to cancel by
+// (nav.Nav's stack-replacing calls, currently the only one -- see n31) uses
+// GetContext instead.
 func (c *Client) Get(be backend.Backend, href string) (HTTPResponse, error) {
-	return c.Request(be, href, http.MethodGet, nil)
+	return c.GetContext(context.Background(), be, href)
 }
 
-// Request performs one HTTP exchange against be.
+// GetContext is Get, with the caller supplying the context. See
+// RequestContext for what ctx controls.
+func (c *Client) GetContext(ctx context.Context, be backend.Backend, href string) (HTTPResponse, error) {
+	return c.RequestContext(ctx, be, href, http.MethodGet, nil)
+}
+
+// Request performs one HTTP exchange against be, under context.Background()
+// -- see Get's doc comment for what that means and RequestContext for the
+// ctx-aware version.
+func (c *Client) Request(be backend.Backend, href, method string, fields map[string]string) (HTTPResponse, error) {
+	return c.RequestContext(context.Background(), be, href, method, fields)
+}
+
+// RequestContext is Request, with the caller supplying ctx.
 //
 // href is whatever the server put in the document -- absolute,
 // root-relative or relative -- and is resolved against be's base URL. Only
 // the scheme and authority come from us; the path always came from the
 // server (see internal/urlresolve and docs/DESIGN.md, "The rule everything
 // else follows from").
-func (c *Client) Request(be backend.Backend, href, method string, fields map[string]string) (HTTPResponse, error) {
+//
+// ctx is combined with this call's own timeout budget (see exchange): the
+// exchange ends at whichever of ctx's cancellation or the timeout comes
+// first. A caller with nothing to cancel by passes context.Background()
+// (what Request does on its behalf) and gets the timeout-only behaviour
+// this package always had; a caller that can supersede its own in-flight
+// call (see n31's motivation, cli/internal/nav's use of GetContext) cancels
+// ctx instead of merely discarding the result once it lands, so the
+// goroutine and socket backing it are torn down immediately rather than
+// held open for up to the full timeout.
+func (c *Client) RequestContext(ctx context.Context, be backend.Backend, href, method string, fields map[string]string) (HTTPResponse, error) {
 	verb := strings.ToUpper(method)
 	target := urlresolve.Resolve(href, be.BaseURL)
 	isRead := verb == http.MethodGet || verb == http.MethodHead
@@ -170,7 +197,7 @@ func (c *Client) Request(be backend.Backend, href, method string, fields map[str
 
 	c.log(fmt.Sprintf("%s %s%s", verb, urlresolve.Origin(target), urlresolve.Path(target)))
 
-	resp, body, elapsed, err := c.exchange(verb, target, headers, requestBody(isRead, fields), timeout)
+	resp, body, elapsed, err := c.exchange(ctx, verb, target, headers, requestBody(isRead, fields), timeout)
 	if err != nil {
 		return HTTPResponse{}, c.classifyTransportError(err, verb, target, timeout)
 	}
@@ -194,16 +221,23 @@ func requestBody(isRead bool, fields map[string]string) io.Reader {
 	return strings.NewReader(urlresolve.EncodeForm(fields))
 }
 
-// exchange sends one request under a per-call context.WithTimeout and
-// reads the full response body before the deadline is torn down.
+// exchange sends one request under a context.WithTimeout derived from
+// parent, and reads the full response body before the deadline is torn
+// down.
+//
+// Deriving from parent rather than context.Background() is what lets a
+// caller with something to supersede (nav.Nav's stack-replacing calls, via
+// RequestContext -- see n31) actually abort the round trip in flight,
+// instead of only discarding its result once it lands: cancelling parent
+// cancels the derived context immediately, same as the timeout firing does.
 //
 // The context's cancel func is deferred here, not in the caller, and
 // deliberately spans the io.ReadAll call: net/http ties a response body
 // read to the request's context, so cancelling before the body is fully
 // read would abort an in-progress read with a spurious error, not just
 // bound the time to first byte.
-func (c *Client) exchange(verb, target string, headers map[string]string, body io.Reader, timeout time.Duration) (*http.Response, []byte, time.Duration, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func (c *Client) exchange(parent context.Context, verb, target string, headers map[string]string, body io.Reader, timeout time.Duration) (*http.Response, []byte, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, verb, target, body)
@@ -233,14 +267,23 @@ func (c *Client) exchange(verb, target string, headers map[string]string, body i
 // response existed into a Failure.
 //
 // A timeout is distinguished from every other transport error by checking
-// errors.Is(err, context.DeadlineExceeded): our own per-request context is
-// the only deadline in play, so that error -- and only that error -- means
-// the request outran its budget. Anything else (DNS failure, TLS error,
-// refused connection, a body read that broke mid-stream) means the request
+// errors.Is(err, context.DeadlineExceeded): our own per-request
+// context.WithTimeout is the only deadline in play, so that error -- and
+// only that error -- means the request outran its budget. Anything else
+// (DNS failure, TLS error, refused connection, a body read that broke
+// mid-stream, or -- since n31 -- the caller's own parent context being
+// cancelled out from under a superseded call, which surfaces as
+// context.Canceled rather than context.DeadlineExceeded) means the request
 // never arrived and the answer never will; that is exactly
 // failure.Unreachable, per docs/DESIGN.md's "A failed request is not an
 // answer" -- it says nothing about the state of the thing we asked about,
-// only that we could not ask.
+// only that we could not ask. A cancellation lumping in with Unreachable
+// rather than getting its own Kind is deliberate: every caller that can
+// cancel (currently only nav.Nav, via GetContext) already discards a
+// superseded call's result by its own generation guard before ever looking
+// at the Kind, so there is nothing for a finer-grained Kind to buy yet --
+// see n31's follow-up task if a future caller needs to tell "cancelled by
+// us" apart from "genuinely unreachable".
 func (c *Client) classifyTransportError(err error, verb, target string, timeout time.Duration) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		c.log(fmt.Sprintf("%s %s -> timed out after %dms", verb, urlresolve.Path(target), timeout.Milliseconds()))

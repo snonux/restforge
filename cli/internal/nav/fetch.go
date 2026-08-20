@@ -1,6 +1,8 @@
 package nav
 
 import (
+	"context"
+
 	"github.com/snonux/restforge/cli/internal/backend"
 	"github.com/snonux/restforge/cli/internal/failure"
 	"github.com/snonux/restforge/cli/internal/siren"
@@ -17,15 +19,14 @@ import (
 // openBackend.
 func (n *Nav) OpenRoot(be backend.Backend) {
 	n.mu.Lock()
-	n.generation++
-	gen := n.generation
+	gen, ctx := n.beginFetchLocked()
 	n.stack = nil
 	n.current = be
 	n.state = StateLoading
 	n.failure = nil
 	n.mu.Unlock()
 
-	resp, err := n.http.Get(be, be.BaseURL)
+	resp, err := n.http.GetContext(ctx, be, be.BaseURL)
 	if err != nil {
 		// A second OpenRoot/Adopt/Back/Fetch may have run while this GET
 		// was in flight -- see Nav.generation. If so, this failure is not
@@ -92,13 +93,12 @@ func (n *Nav) followStart(be backend.Backend, root siren.Entity, gen uint64) {
 		n.mu.Unlock()
 		return
 	}
-	n.generation++
-	fetchGen := n.generation
+	fetchGen, ctx := n.beginFetchLocked()
 	n.state = StateLoading
 	n.failure = nil
 	n.mu.Unlock()
 
-	n.fetchAndApply(be, fetchGen, href, be.StartRel, false)
+	n.fetchAndApply(ctx, be, fetchGen, href, be.StartRel, false)
 }
 
 // Fetch follows href and pushes the result on top of the stack -- mirrors
@@ -119,12 +119,13 @@ func (n *Nav) Fetch(href, title string) {
 func (n *Nav) Adopt(be backend.Backend) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	// Bumps generation before resetting the stack so that any fetch still
-	// in flight for the backend being switched away from (e.g. a slow
-	// followStart from an earlier OpenRoot) finds itself stale once it
-	// lands and discards its result instead of pushing onto be's stack --
-	// see Nav.generation.
-	n.generation++
+	// Supersedes before resetting the stack so that any fetch still in
+	// flight for the backend being switched away from (e.g. a slow
+	// followStart from an earlier OpenRoot) is both cancelled outright and
+	// -- as a backstop, for a round trip already past cancelling -- finds
+	// itself stale once it lands and discards its result instead of
+	// pushing onto be's stack -- see Nav.generation and Nav.cancel.
+	n.supersedeLocked()
 	n.stack = nil
 	n.current = be
 	n.state = StateOK
@@ -169,10 +170,11 @@ func (n *Nav) OpenEmbedded(index int) {
 	if index < 0 || index >= len(entities) {
 		return
 	}
-	// Bumps generation before pushing: a fetch already in flight when the
-	// user opens this embedded entity must not land afterwards and shove
-	// its own frame on top of the one just opened -- see Nav.generation.
-	n.generation++
+	// Supersedes before pushing: a fetch already in flight when the user
+	// opens this embedded entity must not land afterwards and shove its own
+	// frame on top of the one just opened -- see Nav.generation and
+	// Nav.cancel.
+	n.supersedeLocked()
 	child := entities[index]
 	n.pushLocked(child, child.Follow("self"), child.Label())
 }
@@ -190,11 +192,12 @@ func (n *Nav) Back() {
 	if len(n.stack) <= 1 {
 		return
 	}
-	// Bumped before the pop: this is precisely the scenario the bug this
-	// package's generation guard fixes -- a Fetch/Refresh/OpenRoot started
-	// before the user pressed Back must not land afterwards and silently
-	// override the Back the user actually asked for -- see Nav.generation.
-	n.generation++
+	// Superseded before the pop: this is precisely the scenario the bug
+	// this package's generation guard fixes -- a Fetch/Refresh/OpenRoot
+	// started before the user pressed Back must not land afterwards and
+	// silently override the Back the user actually asked for -- see
+	// Nav.generation and Nav.cancel.
+	n.supersedeLocked()
 	last := len(n.stack) - 1
 	// Zeroed before the re-slice: shrinking a slice by re-slicing alone
 	// leaves the dropped element's frame (including its siren.Entity,
@@ -239,36 +242,41 @@ func (n *Nav) Back() {
 // exists to protect -- see the package comment.
 func (n *Nav) fetch(href, title string, replace bool) {
 	n.mu.Lock()
-	// Bumping generation here, not just in Back/OpenRoot/Adopt/OpenEmbedded,
-	// is what makes two concurrent fetches (e.g. a second Fetch fired
-	// before the first returns) resolve to "the one that started last
-	// wins": whichever fetch's HTTP round trip lands first will find its
-	// captured gen no longer equal to n.generation once the other one has
-	// started, and discard its result -- see Nav.generation.
-	n.generation++
-	gen := n.generation
+	// Superseding here, not just in Back/OpenRoot/Adopt/OpenEmbedded, is
+	// what makes two concurrent fetches (e.g. a second Fetch fired before
+	// the first returns) resolve to "the one that started last wins":
+	// whichever fetch's HTTP round trip lands first will find its captured
+	// gen no longer equal to n.generation once the other one has started
+	// (and, since n31, will already have had its own context cancelled by
+	// that later call's beginFetchLocked) -- see Nav.generation and
+	// Nav.cancel.
+	gen, ctx := n.beginFetchLocked()
 	n.state = StateLoading
 	n.failure = nil
 	current := n.current
 	n.mu.Unlock()
 
-	n.fetchAndApply(current, gen, href, title, replace)
+	n.fetchAndApply(ctx, current, gen, href, title, replace)
 }
 
 // fetchAndApply performs the GET against be and applies the result to the
 // stack, but only if gen is still the live generation once the round trip
-// returns -- see Nav.generation. Caller must have already bumped
-// n.generation to gen (and set State/Failure for the loading phase) before
-// calling this; it exists only to share the GET-then-guarded-apply shape
-// between fetch() (which reads be from n.current) and followStart (which
-// cannot: see its own doc comment).
-func (n *Nav) fetchAndApply(be backend.Backend, gen uint64, href, title string, replace bool) {
+// returns -- see Nav.generation. Caller must have already called
+// beginFetchLocked to obtain gen and ctx (and set State/Failure for the
+// loading phase) before calling this; it exists only to share the
+// GET-then-guarded-apply shape between fetch() (which reads be from
+// n.current) and followStart (which cannot: see its own doc comment).
+func (n *Nav) fetchAndApply(ctx context.Context, be backend.Backend, gen uint64, href, title string, replace bool) {
 	// The HTTP round trip runs with no lock held -- see the package's mu
 	// doc comment -- so a concurrent View render keeps reading whatever
 	// State/Document the caller committed before calling this (StateLoading,
 	// and the last-good Document beneath it) instead of blocking for the
-	// duration of the request.
-	resp, err := n.http.Get(be, href)
+	// duration of the request. ctx is beginFetchLocked's own cancellable
+	// context for this fetch -- cancelled by a later supersedeLocked, so
+	// this call may return early with a context.Canceled-flavoured error
+	// rather than running to completion; either way the gen check below
+	// discards the result the same as any other stale response.
+	resp, err := n.http.GetContext(ctx, be, href)
 	if err != nil {
 		// Superseded while the GET was in flight (a Back, a second
 		// Fetch/Refresh/followStart, or an OpenRoot/Adopt for a different
@@ -289,6 +297,7 @@ func (n *Nav) fetchAndApply(be backend.Backend, gen uint64, href, title string, 
 		// this generation counter exists to prevent.
 		return
 	}
+	n.releaseCancelLocked()
 	if replace && len(n.stack) > 0 {
 		n.stack[len(n.stack)-1] = frame{entity: entity, href: href, title: title}
 	} else {
@@ -296,6 +305,63 @@ func (n *Nav) fetchAndApply(be backend.Backend, gen uint64, href, title string, 
 	}
 	n.state = StateOK
 	n.failure = nil
+}
+
+// supersedeLocked cancels whatever fetch is currently in flight, if any,
+// and bumps generation, returning its new value. n.mu must be held.
+//
+// Every call that may invalidate an in-flight fetch goes through this --
+// OpenRoot and followStart via beginFetchLocked below, and Adopt,
+// OpenEmbedded, Back and fetch() directly or via beginFetchLocked -- so
+// that a fetch this call supersedes is not just made stale (the generation
+// check every caller of Get used to rely on alone, pre-n31) but has its
+// underlying HTTP round trip actually cancelled: see Nav.cancel and n31.
+// Calling an already-fired or already-nil cancel func is a safe no-op
+// (context.CancelFunc's contract), so there is no need to track whether
+// the fetch it belonged to had already finished on its own.
+func (n *Nav) supersedeLocked() uint64 {
+	if n.cancel != nil {
+		n.cancel()
+		n.cancel = nil
+	}
+	n.generation++
+	return n.generation
+}
+
+// beginFetchLocked supersedes whatever fetch is in flight (see
+// supersedeLocked) and opens a fresh, cancellable context for a new one,
+// remembering its cancel func so a later supersedeLocked can abort it in
+// turn. n.mu must be held by the caller; the returned ctx is for the
+// caller's own HTTP round trip, to be run after releasing the lock.
+func (n *Nav) beginFetchLocked() (uint64, context.Context) {
+	gen := n.supersedeLocked()
+	ctx, cancel := context.WithCancel(context.Background())
+	n.cancel = cancel
+	return gen, ctx
+}
+
+// releaseCancelLocked cancels and forgets n.cancel, if set. Called by every
+// site that applies a fetch's outcome (pushIfCurrent, applyFailureIfCurrent,
+// fetchAndApply's own success tail) once it has confirmed, under lock, that
+// gen still matches n.generation -- i.e. this fetch landed on its own,
+// neither superseded nor invalidated in the meantime.
+//
+// Without this, n.cancel would go on pointing at a finished fetch's now-
+// pointless cancel func until some unrelated later call happened to
+// supersede it -- contradicting Nav.cancel's own "a fetch is genuinely in
+// flight" invariant the moment this fetch lands, and leaving a cancel func
+// uncalled indefinitely, which every context.CancelFunc's contract expects
+// its last use to do. Calling it here has no observable effect today (the
+// context this cancels is always rooted at context.Background(), so there
+// is no parent watcher goroutine to release), but keeps that contract
+// honestly satisfied rather than accidentally satisfied only because of
+// how beginFetchLocked happens to build its context today. n.mu must be
+// held. Safe to call when n.cancel is already nil.
+func (n *Nav) releaseCancelLocked() {
+	if n.cancel != nil {
+		n.cancel()
+		n.cancel = nil
+	}
 }
 
 // pushLocked appends entity onto the stack and marks it the new current
@@ -319,6 +385,7 @@ func (n *Nav) pushIfCurrent(gen uint64, entity siren.Entity, href, title string)
 	if n.generation != gen {
 		return false
 	}
+	n.releaseCancelLocked()
 	n.pushLocked(entity, href, title)
 	return true
 }
@@ -334,13 +401,14 @@ func (n *Nav) applyFailureIfCurrent(gen uint64, err error) {
 	if n.generation != gen {
 		return
 	}
+	n.releaseCancelLocked()
 	n.applyFailureLocked(err)
 }
 
 // applyFailureLocked records err as the reason the last fetch did not land,
 // mapping its Kind onto a DocumentState via StateFor. Coerces err through
 // the shared failure.From rather than hand-rolling the type assertion:
-// httpGetter.Get always returns a *failure.Failure on error (see
+// httpGetter.GetContext always returns a *failure.Failure on error (see
 // httpclient's package comment), so the Kind: Config fallback exists only
 // so a hand-rolled test double that returns a plain error still degrades
 // to something sensible rather than panicking -- the same fallback action
