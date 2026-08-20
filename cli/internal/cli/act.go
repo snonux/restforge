@@ -156,7 +156,7 @@ func handleSuccess(out, errw io.Writer, g *globalFlags, client *httpclient.Clien
 	}
 	result := live.ActionOutcome{Status: resp.Status, Entity: resultEntity}
 	if !live.ShouldWatch(result) {
-		return printResult(out, g, resp.Entity, resultEntity, "")
+		return printResult(out, g, be, resp.Entity, resultEntity, "")
 	}
 	return watchAndPrint(out, errw, g, client, be, origin, result, resp.Entity)
 }
@@ -183,21 +183,24 @@ func watchAndPrint(out, errw io.Writer, g *globalFlags, client *httpclient.Clien
 			raw, entity = r, e
 		}
 	}
-	return printResult(out, g, raw, entity, "result")
+	return printResult(out, g, be, raw, entity, "result")
 }
 
 // printResult writes the result in the selected format: text rows (the
 // default) or the raw decoded document for --output json. nil raw falls
 // back to re-marshalling the typed entity, which only happens when no raw
-// document was available (nothing to watch and nothing to follow).
-func printResult(out io.Writer, g *globalFlags, raw any, entity siren.Entity, fallback string) error {
+// document was available (nothing to watch and nothing to follow). be is
+// the backend entity came from, threaded through to render.Document so any
+// FetchTarget it produces carries the right backend to fetch from -- see
+// render.Document's own doc comment.
+func printResult(out io.Writer, g *globalFlags, be backend.Backend, raw any, entity siren.Entity, fallback string) error {
 	if g.output == "json" {
 		if raw == nil {
 			return PrintJSON(out, entity)
 		}
 		return PrintJSON(out, raw)
 	}
-	doc := render.Document(&entity, fallback)
+	doc := render.Document(&entity, fallback, be)
 	return PrintDocumentText(out, &doc)
 }
 

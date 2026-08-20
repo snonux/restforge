@@ -21,9 +21,20 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/snonux/restforge/cli/internal/backend"
 	"github.com/snonux/restforge/cli/internal/render"
 	"github.com/snonux/restforge/cli/internal/siren"
 )
+
+// testBackend stands in for whatever backend a document was rendered
+// against -- passed to render.Document so TestTargets can assert it is
+// stamped onto every FetchTarget produced (see FetchTarget's own doc
+// comment and p31); every other test in this file passes it too, purely so
+// render.Document's signature does not need two different call shapes in
+// one file, and asserts nothing about it.
+func testBackend() backend.Backend {
+	return backend.Backend{Name: "pantry", BaseURL: "https://pantry.example/"}
+}
 
 // docJSON mirrors the `doc` fixture in render_service_test.dart.
 var docJSON = map[string]any{
@@ -121,7 +132,7 @@ func targetKind(target render.RowTarget) string {
 }
 
 func TestOrderAndCompleteness(t *testing.T) {
-	page := render.Document(ref(doc(t)), "")
+	page := render.Document(ref(doc(t)), "", testBackend())
 
 	t.Run("the title comes from the document", func(t *testing.T) {
 		if page.Title != "The pantry" {
@@ -165,7 +176,7 @@ func TestOrderAndCompleteness(t *testing.T) {
 }
 
 func TestValuesAreNotInterpreted(t *testing.T) {
-	page := render.Document(ref(doc(t)), "")
+	page := render.Document(ref(doc(t)), "", testBackend())
 
 	cases := []struct {
 		label string
@@ -186,7 +197,7 @@ func TestValuesAreNotInterpreted(t *testing.T) {
 }
 
 func TestTargets(t *testing.T) {
-	page := render.Document(ref(doc(t)), "")
+	page := render.Document(ref(doc(t)), "", testBackend())
 
 	t.Run("a property opens the reading window", func(t *testing.T) {
 		target := rowNamed(t, page, "kettle").Target
@@ -229,6 +240,12 @@ func TestTargets(t *testing.T) {
 		if fetch.Href != "/shelves/bottom" {
 			t.Errorf("Href = %q, want /shelves/bottom", fetch.Href)
 		}
+		// p31: the backend Document was rendered against must be stamped
+		// onto the target, so a later nav.Fetch pins its GET to it rather
+		// than whatever backend happens to be current by then.
+		if fetch.Backend != testBackend() {
+			t.Errorf("Backend = %+v, want %+v", fetch.Backend, testBackend())
+		}
 	})
 
 	t.Run("a link is fetched by its href", func(t *testing.T) {
@@ -244,7 +261,7 @@ func TestTargets(t *testing.T) {
 }
 
 func TestActions(t *testing.T) {
-	page := render.Document(ref(doc(t)), "")
+	page := render.Document(ref(doc(t)), "", testBackend())
 
 	t.Run("an action shows its title and is addressed by name", func(t *testing.T) {
 		// The title is the server's sentence for a person; the name is an
@@ -292,7 +309,7 @@ func TestEntitiesSharingAClass(t *testing.T) {
 			},
 		},
 	})
-	page := render.Document(&hosts, "")
+	page := render.Document(&hosts, "", testBackend())
 
 	t.Run("entities sharing a class are told apart", func(t *testing.T) {
 		if page.Rows[0].Label != "f0" {
@@ -362,7 +379,7 @@ func TestUnfamiliarAndMalformedDocuments(t *testing.T) {
 				map[string]any{"name": "gorp", "method": "DELETE", "href": "/g"},
 			},
 		})
-		page := render.Document(&alien, "fallback")
+		page := render.Document(&alien, "fallback", testBackend())
 		if len(page.Rows) != 3 {
 			t.Fatalf("len(Rows) = %d, want 3", len(page.Rows))
 		}
@@ -375,7 +392,7 @@ func TestUnfamiliarAndMalformedDocuments(t *testing.T) {
 	})
 
 	t.Run("an empty document renders no rows and uses the fallback title", func(t *testing.T) {
-		empty := render.Document(&siren.Entity{}, "fallback")
+		empty := render.Document(&siren.Entity{}, "fallback", testBackend())
 		if len(empty.Rows) != 0 {
 			t.Errorf("len(Rows) = %d, want 0", len(empty.Rows))
 		}
@@ -385,7 +402,7 @@ func TestUnfamiliarAndMalformedDocuments(t *testing.T) {
 	})
 
 	t.Run("a missing document does not panic", func(t *testing.T) {
-		missing := render.Document(nil, "fallback")
+		missing := render.Document(nil, "fallback", testBackend())
 		if len(missing.Rows) != 0 {
 			t.Errorf("len(Rows) = %d, want 0", len(missing.Rows))
 		}

@@ -141,10 +141,14 @@ func (s *Session) Activate(target render.RowTarget) {
 	case render.FetchTarget:
 		// Mirrors nav.js's fetch(href, title, false): navigating somewhere
 		// new means whatever was being watched belonged to the screen being
-		// left.
+		// left. t.Backend -- the backend this target's document was
+		// rendered against, not whatever nav.Nav.Backend() happens to
+		// return right now -- pins the fetch to the right server even under
+		// the goroutine-scheduling unfairness p31 closes; see
+		// render.FetchTarget's and nav.Nav.Fetch's own doc comments.
 		s.live.Stop()
 		s.clearTransient()
-		s.nav.Fetch(t.Href, "")
+		s.nav.Fetch(t.Backend, t.Href, "")
 	case render.EmbeddedTarget:
 		// Mirrors nav.js's openEmbedded, which does not stop a live watch
 		// -- opening a sub-entity already in hand is not "leaving" the

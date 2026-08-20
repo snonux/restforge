@@ -142,7 +142,7 @@ func (n *Nav) Document() *render.RenderedDocument {
 		return nil
 	}
 	top := n.stack[len(n.stack)-1]
-	doc := render.Document(&top.entity, top.title)
+	doc := render.Document(&top.entity, top.title, top.be)
 	return &doc
 }
 

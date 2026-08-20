@@ -1,5 +1,7 @@
 package render
 
+import "github.com/snonux/restforge/cli/internal/backend"
+
 // RowTarget is what activating a Row does. This is Go's nearest equivalent
 // to the sealed RowTarget hierarchy in render_service.dart: an unexported
 // marker method closes the interface to the four types defined in this
@@ -32,8 +34,19 @@ func (DetailTarget) isRowTarget() {}
 
 // FetchTarget follows an href -- a link, or a sub-entity that is only a
 // reference.
+//
+// Backend is the backend the document this target came from was rendered
+// against -- populated by Document/entityRow/linkRows from whichever
+// backend.Backend the caller passed in, itself read from the same nav.Nav
+// frame the row's own href was captured from (see nav.frame.be). Carrying it
+// here, rather than leaving the caller to re-read whatever backend happens
+// to be current when the target is finally activated, is what lets
+// nav.Fetch/nav.Refresh pin their GET to the backend href actually belongs
+// to instead of racing nav.Nav.current -- see p31 and nav.fetch's own doc
+// comment for the gap this closes.
 type FetchTarget struct {
-	Href string
+	Backend backend.Backend
+	Href    string
 }
 
 func (FetchTarget) isRowTarget() {}

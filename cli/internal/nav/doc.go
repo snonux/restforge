@@ -80,15 +80,28 @@
 // OpenRoot's own chained fetch -- followStart, when be.StartRel is
 // configured -- is not just "another fetch() call": it threads OpenRoot's
 // gen through explicitly (fetch.go, followStart) and re-checks it before
-// even starting its own GET, rather than letting a generic fetch() read
-// n.current fresh. Reading n.current there would be wrong for a more
-// subtle reason than staleness alone -- if a second OpenRoot for a
-// different backend has already run by the time followStart's own GET
-// would start, n.current no longer names the backend be.StartRel's href
-// belongs to, and sending that href to whatever backend happens to be
-// current now would resolve a relative URL against the wrong BaseURL and
+// even starting its own GET, rather than starting a fresh generation the
+// way a bare fetch() call would. Reading whatever backend happens to be
+// current at that point would be wrong for a more subtle reason than
+// staleness alone -- if a second OpenRoot for a different backend has
+// already run by the time followStart's own GET would start, that backend
+// no longer names the one be.StartRel's href belongs to, and sending that
+// href there would resolve a relative URL against the wrong BaseURL and
 // send the wrong backend's auth secret. followStart's own doc comment
 // covers this in full.
+//
+// Fetch and Refresh had the sibling half of this same gap, deliberately
+// left open by i31 and closed by p31: fetch() (the shared body behind both)
+// used to read n.current fresh under its own lock rather than being pinned
+// to the backend its href/frame actually belongs to, so a second,
+// later-dispatched OpenRoot/Adopt winning the race to Nav's mutex first
+// could make it target the wrong backend even though its own generation
+// bump was the newest at that point (so the guard above could not catch
+// it). fetch() now takes be as an explicit parameter -- Fetch's own be
+// (ultimately render.FetchTarget.Backend, stamped on every row Document
+// renders) or Refresh's here.be (the top frame's own recorded backend, see
+// frame.be) -- closing it the same way followStart already did for
+// OpenRoot's own chained fetch.
 //
 // # A superseded fetch is also actually cancelled (n31)
 //

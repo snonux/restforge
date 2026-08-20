@@ -46,7 +46,7 @@ func (n *Nav) OpenRoot(be backend.Backend) {
 		return
 	}
 
-	if !n.pushIfCurrent(gen, entity, be.BaseURL, be.Name) {
+	if !n.pushIfCurrent(gen, entity, be.BaseURL, be.Name, be) {
 		// Superseded while the GET was in flight: some other call already
 		// reset n.stack/n.current out from under this one (see
 		// Nav.generation). be's root must not be pushed on top of
@@ -105,8 +105,18 @@ func (n *Nav) followStart(be backend.Backend, root siren.Entity, gen uint64) {
 // nav.js's fetch(href, title, false), the case a link row or a saved
 // shortcut uses. On failure the stack, and so Document, is untouched; only
 // State/Failure change.
-func (n *Nav) Fetch(href, title string) {
-	n.fetch(href, title, false)
+//
+// be is the backend href actually belongs to -- render.FetchTarget.Backend
+// for a pressed row, or whatever backend a caller just Adopt-ed for a saved
+// shortcut (see Session.Activate and RunQuick). Pinning the GET to be,
+// rather than re-reading whatever Nav.current happens to be once this
+// call's own lock section runs, is what closes p31: without it, a second,
+// later-dispatched OpenRoot/Adopt for a different backend landing first
+// could send href to that other backend's server before this call's own
+// generation bump even runs, since bumping-and-reading n.current used to
+// happen in the same critical section here.
+func (n *Nav) Fetch(be backend.Backend, href, title string) {
+	n.fetch(be, href, title, false)
 }
 
 // Adopt switches to be without fetching its root -- mirrors adopt in
@@ -138,6 +148,18 @@ func (n *Nav) Adopt(be backend.Backend) {
 // the honest option there, same as nav.js's comment on the same case: it is
 // not a failure, so it does not touch State/Failure either, it is simply a
 // no-op past clearing whatever error was already on screen.
+//
+// The backend to re-fetch against comes from here.be -- the backend this
+// exact frame was originally fetched from -- captured in the same lock
+// section as here.href/here.title below, rather than read separately from
+// Nav.current the way this method did before p31. Nav.current and the top
+// frame's own backend agree at every ordinary moment (both only ever change
+// together, under OpenRoot/Adopt), but only reading here.be closes the same
+// gap Fetch's own be parameter closes for a caller-supplied href: a second,
+// later-dispatched OpenRoot/Adopt for a different backend landing between
+// this read and fetch()'s own generation bump must not be able to make this
+// call's GET go to that other backend instead of the one here.href actually
+// belongs to.
 func (n *Nav) Refresh() {
 	n.mu.Lock()
 	if len(n.stack) == 0 {
@@ -152,7 +174,7 @@ func (n *Nav) Refresh() {
 		return
 	}
 	n.mu.Unlock()
-	n.fetch(here.href, here.title, true)
+	n.fetch(here.be, here.href, here.title, true)
 }
 
 // OpenEmbedded opens a sub-entity that arrived embedded inside the document
@@ -176,7 +198,10 @@ func (n *Nav) OpenEmbedded(index int) {
 	// Nav.cancel.
 	n.supersedeLocked()
 	child := entities[index]
-	n.pushLocked(child, child.Follow("self"), child.Label())
+	// n.current, not a stale copy: this whole method runs under n.mu, so it
+	// is exactly the backend the entity already on screen (and so child,
+	// embedded inside it) was fetched from.
+	n.pushLocked(child, child.Follow("self"), child.Label(), n.current)
 }
 
 // Back pops one document. A no-op at the backend's root -- see CanGoBack.
@@ -212,35 +237,23 @@ func (n *Nav) Back() {
 	n.failure = nil
 }
 
-// fetch performs one fetch against whatever backend is current right now,
-// and applies its outcome to the stack. Shared by Fetch (push) and Refresh
-// (replace) -- mirrors nav.js's single fetch(href, title, replace).
-// followStart does not go through here -- see its own doc comment for why
-// it needs a fixed backend rather than n.current.
+// fetch performs one fetch against be and applies its outcome to the stack.
+// Shared by Fetch (push) and Refresh (replace) -- mirrors nav.js's single
+// fetch(href, title, replace). followStart does not go through here -- see
+// its own doc comment for why it needs a fixed backend rather than
+// n.current.
 //
-// Known boundary of the staleness guard: href is chosen by the caller (a
-// row the user pressed, captured from whatever document was on screen at
-// that moment) but current is read fresh, right here, not carried in from
-// the caller. Fetch/Refresh have no backend parameter of their own to pin
-// the way followStart pins be -- see Session.Activate/Session.Refresh,
-// which call them with only an href, never a backend.Backend, because
-// render.FetchTarget (what a pressed row's target actually is) carries no
-// backend either. In the extremely narrow case where a second call already
-// switched n.current to a different backend by the time this fetch()'s own
-// lock/bump runs -- even though that second call was issued strictly later
-// by the user -- href (meant for the backend on screen when it was
-// captured) would be sent to that different backend, and the generation
-// guard cannot catch it, since this call's own bump is the newest one at
-// that point. Closing this fully would mean threading backend.Backend
-// through render.FetchTarget and Session's own API, not just this
-// package's guard; out of scope here -- see i31 for the guard this
-// function does provide, and its own annotations for why this residual
-// case was tracked as a follow-up instead of folded in.
+// be is pinned by the caller (Fetch's own be parameter, or Refresh's
+// here.be) rather than read fresh from n.current the way this method did
+// before p31 -- see Fetch's and Refresh's own doc comments for the gap that
+// closes. It is threaded straight through to fetchAndApply, the same shape
+// followStart already used for the same reason (see fetchAndApply's own
+// doc comment).
 //
 // A failure never touches the stack: Document keeps reading whatever was
 // there before this call, which is precisely the invariant this package
 // exists to protect -- see the package comment.
-func (n *Nav) fetch(href, title string, replace bool) {
+func (n *Nav) fetch(be backend.Backend, href, title string, replace bool) {
 	n.mu.Lock()
 	// Superseding here, not just in Back/OpenRoot/Adopt/OpenEmbedded, is
 	// what makes two concurrent fetches (e.g. a second Fetch fired before
@@ -253,10 +266,9 @@ func (n *Nav) fetch(href, title string, replace bool) {
 	gen, ctx := n.beginFetchLocked()
 	n.state = StateLoading
 	n.failure = nil
-	current := n.current
 	n.mu.Unlock()
 
-	n.fetchAndApply(ctx, current, gen, href, title, replace)
+	n.fetchAndApply(ctx, be, gen, href, title, replace)
 }
 
 // fetchAndApply performs the GET against be and applies the result to the
@@ -264,8 +276,9 @@ func (n *Nav) fetch(href, title string, replace bool) {
 // returns -- see Nav.generation. Caller must have already called
 // beginFetchLocked to obtain gen and ctx (and set State/Failure for the
 // loading phase) before calling this; it exists only to share the
-// GET-then-guarded-apply shape between fetch() (which reads be from
-// n.current) and followStart (which cannot: see its own doc comment).
+// GET-then-guarded-apply shape between fetch() and followStart, both of
+// which (since p31) pin be explicitly from the caller rather than reading
+// Nav.current here.
 func (n *Nav) fetchAndApply(ctx context.Context, be backend.Backend, gen uint64, href, title string, replace bool) {
 	// The HTTP round trip runs with no lock held -- see the package's mu
 	// doc comment -- so a concurrent View render keeps reading whatever
@@ -298,10 +311,14 @@ func (n *Nav) fetchAndApply(ctx context.Context, be backend.Backend, gen uint64,
 		return
 	}
 	n.releaseCancelLocked()
+	// be, the backend this GET was actually pinned to and sent against, is
+	// recorded on the frame itself -- not re-read from n.current -- so a
+	// later Refresh or rendered FetchTarget can pin its own fetch the same
+	// way (see frame.be and p31).
 	if replace && len(n.stack) > 0 {
-		n.stack[len(n.stack)-1] = frame{entity: entity, href: href, title: title}
+		n.stack[len(n.stack)-1] = frame{entity: entity, be: be, href: href, title: title}
 	} else {
-		n.stack = append(n.stack, frame{entity: entity, href: href, title: title})
+		n.stack = append(n.stack, frame{entity: entity, be: be, href: href, title: title})
 	}
 	n.state = StateOK
 	n.failure = nil
@@ -365,9 +382,13 @@ func (n *Nav) releaseCancelLocked() {
 }
 
 // pushLocked appends entity onto the stack and marks it the new current
-// document. Caller must hold n.mu.
-func (n *Nav) pushLocked(entity siren.Entity, href, title string) {
-	n.stack = append(n.stack, frame{entity: entity, href: href, title: title})
+// document. be is the backend entity was fetched from (or, for
+// OpenEmbedded, the backend the entity it was embedded in already belongs
+// to) -- recorded on the frame so a later Refresh or rendered FetchTarget
+// can pin its own fetch to it -- see frame.be and p31. Caller must hold
+// n.mu.
+func (n *Nav) pushLocked(entity siren.Entity, href, title string, be backend.Backend) {
+	n.stack = append(n.stack, frame{entity: entity, be: be, href: href, title: title})
 	n.state = StateOK
 	n.failure = nil
 }
@@ -379,14 +400,14 @@ func (n *Nav) pushLocked(entity siren.Entity, href, title string) {
 // superseded, in which case the caller must not treat entity as
 // authoritative for anything further -- see OpenRoot's use of this before
 // followStart.
-func (n *Nav) pushIfCurrent(gen uint64, entity siren.Entity, href, title string) bool {
+func (n *Nav) pushIfCurrent(gen uint64, entity siren.Entity, href, title string, be backend.Backend) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.generation != gen {
 		return false
 	}
 	n.releaseCancelLocked()
-	n.pushLocked(entity, href, title)
+	n.pushLocked(entity, href, title, be)
 	return true
 }
 

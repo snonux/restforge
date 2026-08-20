@@ -109,11 +109,11 @@ func (s *Session) RunQuick(item quick.QuickItem) (QuickRunOutcome, error) {
 	s.nav.Adopt(*be)
 
 	if item.Kind == quick.KindDocument {
-		s.nav.Fetch(item.Href, item.Label)
+		s.nav.Fetch(*be, item.Href, item.Label)
 		return QuickRunOpened, nil
 	}
 
-	s.nav.Fetch(item.Holder, item.Label)
+	s.nav.Fetch(*be, item.Holder, item.Label)
 	if s.nav.State() == nav.StateOK {
 		// Only ask if the holder itself was actually fetched -- a failed
 		// fetch already left state/failure set for the caller to render;

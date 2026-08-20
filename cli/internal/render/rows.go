@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/snonux/restforge/cli/internal/backend"
 	"github.com/snonux/restforge/cli/internal/siren"
 )
 
@@ -85,19 +86,21 @@ func summarise(entity siren.Entity, skipKey string) string {
 }
 
 // entityRows renders each of entity's sub-entities as one Row -- embedded
-// or reference, per siren.Entity.IsReference. Mirrors entityRows() in
-// render.js and _entityRows() in render_service.dart.
-func entityRows(entity siren.Entity) []Row {
+// or reference, per siren.Entity.IsReference. be is stamped onto every
+// FetchTarget a reference produces -- see Document's own doc comment for
+// why. Mirrors entityRows() in render.js and _entityRows() in
+// render_service.dart.
+func entityRows(entity siren.Entity, be backend.Backend) []Row {
 	rows := make([]Row, 0, len(entity.Entities))
 	for i, child := range entity.Entities {
-		rows = append(rows, entityRow(i, child))
+		rows = append(rows, entityRow(i, child, be))
 	}
 	return rows
 }
 
 // entityRow renders one sub-entity, split out of entityRows to keep that
 // loop body short.
-func entityRow(index int, child siren.Entity) Row {
+func entityRow(index int, child siren.Entity, be backend.Backend) Row {
 	// When the label came from a property, that property is redundant in
 	// the summary below it. When the label came from the title instead,
 	// nothing needs to be skipped.
@@ -112,7 +115,7 @@ func entityRow(index int, child siren.Entity) Row {
 	sublabel := ""
 	var target RowTarget
 	if child.IsReference {
-		target = FetchTarget{Href: child.Href}
+		target = FetchTarget{Backend: be, Href: child.Href}
 	} else {
 		sublabel = summarise(child, skipKey)
 		target = EmbeddedTarget{Index: index}
@@ -129,9 +132,10 @@ func entityRow(index int, child siren.Entity) Row {
 	}
 }
 
-// linkRows renders each of entity's links as one Row. Mirrors linkRows()
-// in render.js and _linkRows() in render_service.dart.
-func linkRows(entity siren.Entity) []Row {
+// linkRows renders each of entity's links as one Row. be is stamped onto
+// every FetchTarget produced -- see Document's own doc comment for why.
+// Mirrors linkRows() in render.js and _linkRows() in render_service.dart.
+func linkRows(entity siren.Entity, be backend.Backend) []Row {
 	rows := make([]Row, 0, len(entity.Links))
 	for _, link := range entity.Links {
 		rels := strings.Join(link.Rel, " ")
@@ -150,7 +154,7 @@ func linkRows(entity siren.Entity) []Row {
 			Label:    label,
 			Sublabel: sublabel,
 			Kind:     RowKindLink,
-			Target:   FetchTarget{Href: link.Href},
+			Target:   FetchTarget{Backend: be, Href: link.Href},
 		})
 	}
 	return rows

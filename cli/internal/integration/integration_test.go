@@ -405,7 +405,7 @@ func TestBrowseConfirmActRefetch(t *testing.T) {
 	}
 
 	// === Awkward case: a response that is not JSON at all =================
-	s.Activate(render.FetchTarget{Href: "/notjson"})
+	s.Activate(render.FetchTarget{Backend: s.Backend(), Href: "/notjson"})
 	if s.State() != nav.StateError {
 		t.Fatalf("notjson state = %v, want StateError", s.State())
 	}
@@ -510,7 +510,7 @@ func TestBrowseConfirmActRefetch(t *testing.T) {
 	runSubprocess(t, []string{"get"}, "The pantry")
 	runSubprocess(t, []string{"act", "label-jar", "--yes", "--value", "subprocess label"}, "The pantry")
 
-	s.Activate(render.FetchTarget{Href: "/slow"})
+	s.Activate(render.FetchTarget{Backend: s.Backend(), Href: "/slow"})
 	if s.State() != nav.StateUnreachable {
 		t.Fatalf("/slow state = %v, want StateUnreachable (timeout)", s.State())
 	}

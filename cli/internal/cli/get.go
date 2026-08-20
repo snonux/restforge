@@ -74,7 +74,7 @@ func runGet(out io.Writer, g *globalFlags, args []string, rel string) error {
 	if g.output == "json" {
 		return PrintJSON(out, raw)
 	}
-	doc := render.Document(&entity, href)
+	doc := render.Document(&entity, href, be)
 	return PrintDocumentText(out, &doc)
 }
 

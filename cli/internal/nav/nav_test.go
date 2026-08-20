@@ -182,7 +182,7 @@ func TestLinkRowCanBeFollowed(t *testing.T) {
 	}
 	fake.reset()
 
-	n.Fetch(target.Href, "shelves")
+	n.Fetch(target.Backend, target.Href, "shelves")
 
 	if got, want := fake.requested, []string{"GET " + base + "shelves"}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("requested = %v, want %v", got, want)
@@ -365,7 +365,7 @@ func TestOpeningDifferentBackendDiscardsOldStack(t *testing.T) {
 	n := nav.New(fake)
 	n.OpenRoot(testBackend())
 	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
-	n.Fetch(target.Href, "shelves")
+	n.Fetch(target.Backend, target.Href, "shelves")
 	if !n.CanGoBack() {
 		t.Fatal("CanGoBack() = false, want true")
 	}
@@ -402,7 +402,7 @@ func TestAdoptSwitchesBackendWithoutFetchingDiscardingOldStack(t *testing.T) {
 	n := nav.New(fake)
 	n.OpenRoot(testBackend())
 	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
-	n.Fetch(target.Href, "shelves")
+	n.Fetch(target.Backend, target.Href, "shelves")
 	if !n.CanGoBack() {
 		t.Fatal("CanGoBack() = false, want true")
 	}
@@ -438,7 +438,7 @@ func TestFetchAfterAdoptPushesOntoFreshOneFrameStack(t *testing.T) {
 	n := nav.New(fake)
 
 	n.Adopt(other)
-	n.Fetch("https://other.example/somewhere", "x")
+	n.Fetch(other, "https://other.example/somewhere", "x")
 
 	if got := n.Document(); got == nil || got.Title != "Elsewhere" {
 		t.Errorf("Document().Title = %v, want %q", got, "Elsewhere")
@@ -595,7 +595,7 @@ func TestBackDuringInFlightFetchIsNotOverwrittenByStaleFetch(t *testing.T) {
 	n := nav.New(fake)
 	n.OpenRoot(testBackend())
 	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
-	n.Fetch(target.Href, "shelves") // stack: [root, shelves]
+	n.Fetch(target.Backend, target.Href, "shelves") // stack: [root, shelves]
 	if !n.CanGoBack() {
 		t.Fatal("CanGoBack() = false, want true")
 	}
@@ -617,7 +617,7 @@ func TestBackDuringInFlightFetchIsNotOverwrittenByStaleFetch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		n.Fetch(base+"deep", "deep")
+		n.Fetch(testBackend(), base+"deep", "deep")
 	}()
 	<-started // "deep" fetch is in flight, blocked before it returns
 
@@ -657,7 +657,7 @@ func TestBackDuringInFlightFetchDiscardsStaleFailureToo(t *testing.T) {
 	n := nav.New(fake)
 	n.OpenRoot(testBackend())
 	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
-	n.Fetch(target.Href, "shelves") // stack: [root, shelves]
+	n.Fetch(target.Backend, target.Href, "shelves") // stack: [root, shelves]
 
 	started := make(chan struct{})
 	gate := make(chan struct{})
@@ -669,7 +669,7 @@ func TestBackDuringInFlightFetchDiscardsStaleFailureToo(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		n.Fetch(base+"nonexistent", "nonexistent") // no such route: 404
+		n.Fetch(testBackend(), base+"nonexistent", "nonexistent") // no such route: 404
 	}()
 	<-started // the failing fetch is in flight, blocked before it returns
 
@@ -717,7 +717,7 @@ func TestAdoptDuringInFlightFetchDiscardsStaleFetch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		n.Fetch(base+"deep", "deep")
+		n.Fetch(testBackend(), base+"deep", "deep")
 	}()
 	<-started // "deep" fetch is in flight, blocked before it returns
 
@@ -767,7 +767,7 @@ func TestOpenEmbeddedDuringInFlightFetchDiscardsStaleFetch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		n.Fetch(base+"deep", "deep") // would push onto [root], making [root, deep]
+		n.Fetch(testBackend(), base+"deep", "deep") // would push onto [root], making [root, deep]
 	}()
 	<-started // "deep" fetch is in flight, blocked before it returns
 
@@ -844,6 +844,192 @@ func TestFollowStartAfterSupersedingOpenRootUsesOriginalBackend(t *testing.T) {
 	for _, r := range fake.requested {
 		if r == "GET "+other.BaseURL+"shelves" {
 			t.Fatalf("followStart's fetch was requested against other's server (%s): it must always target the backend it was opened for, not whatever is current when its GET goes out", r)
+		}
+		if r == "GET "+base+"shelves" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("requested = %v, want a GET for %s", fake.requested, base+"shelves")
+	}
+}
+
+// --- p31: fetch()'s residual gap -- Fetch/Refresh must pin to the backend
+// their href/frame actually belongs to, not whatever Nav.current reads as
+// once their own lock section runs ---------------------------------------
+//
+// i31 fixed followStart's chained fetch to pin an explicit backend.Backend
+// rather than reading n.current (see
+// TestFollowStartAfterSupersedingOpenRootUsesOriginalBackend above), but
+// deliberately left Fetch/Refresh's own sibling gap for this task: neither
+// had a backend parameter of their own to pin with, so fetch() read
+// n.current fresh under its own lock. A second, later-dispatched
+// OpenRoot/Adopt for a different backend winning the race to Nav's mutex
+// first (goroutine-scheduling unfairness, not network latency) could make
+// that read land on the wrong backend -- sending an href captured from
+// backend A's document to backend B's server with B's Secret. p31 closes
+// this by having render.Document stamp the rendering backend onto every
+// FetchTarget (so Session.Activate can pass it to Nav.Fetch) and having
+// each stack frame remember the backend it was fetched from (so Refresh can
+// pin to frame.be instead of Nav.current) -- see render.FetchTarget's,
+// nav.Nav.Fetch's, nav.Nav.Refresh's and frame.be's own doc comments for
+// the mechanism.
+
+// TestFetchPinsToCapturedBackendEvenAfterCurrentSwitchesElsewhere is the
+// simplest, non-racy proof of the fix: a FetchTarget captured while
+// "pantry" was current carries pantry as target.Backend; even once
+// something else (here, a synchronous Adopt) has already switched
+// Nav.current to a different backend by the time Fetch actually runs, the
+// GET must still go to the backend the href was captured from, not
+// whatever Nav.current reads as right now.
+func TestFetchPinsToCapturedBackendEvenAfterCurrentSwitchesElsewhere(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	n.OpenRoot(testBackend())
+	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
+
+	other := backend.Backend{Name: "other", BaseURL: "https://other.example/", Secret: "x"}
+	n.Adopt(other) // Nav.current is "other" by the time Fetch below runs
+	fake.reset()
+
+	n.Fetch(target.Backend, target.Href, "shelves")
+
+	if got, want := fake.requested, []string{"GET " + base + "shelves"}; len(got) != 1 || got[0] != want[0] {
+		t.Errorf("requested = %v, want %v: Fetch must target target.Backend (pantry, where the href was captured from), not whatever backend is current when fetch() actually runs", got, want)
+	}
+}
+
+// TestFetchDuringConcurrentOpenRootForDifferentBackendTargetsOriginalBackend
+// is the concurrent sibling, same shape as
+// TestFollowStartAfterSupersedingOpenRootUsesOriginalBackend: a Fetch is
+// dispatched for pantry's "shelves" link (mirroring
+// activateDocumentSelection's sessionCmd) and blocks mid-GET; while it is
+// in flight, a second, later OpenRoot for a different backend reaches
+// Nav's mutex first and runs to completion. The stale Fetch must still be
+// found to have targeted pantry's server (proving it pinned to the backend
+// its href was captured from, not Nav.current at the time fetch() ran),
+// and once it lands, it must not disturb the second backend's now-current
+// state -- the same generation guard i31 already proved for OpenRoot itself.
+func TestFetchDuringConcurrentOpenRootForDifferentBackendTargetsOriginalBackend(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	n.OpenRoot(testBackend())
+	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
+
+	other := backend.Backend{Name: "other", BaseURL: "https://other.example/", Secret: "x"}
+	fake.routes[other.BaseURL] = map[string]any{
+		"title": "Other root",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/"}},
+	}
+
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	fake.block = func(_ context.Context, url string) {
+		if url != base+"shelves" {
+			return // only gate the Fetch under test, not other's root fetch
+		}
+		close(started)
+		<-gate
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.Fetch(target.Backend, target.Href, "shelves")
+	}()
+	<-started // pantry's "shelves" fetch is in flight, blocked before it returns
+
+	// A second, different backend opens fully while the Fetch above is
+	// still in flight.
+	n.OpenRoot(other)
+	if got := n.Backend(); got != other {
+		t.Fatalf("Backend() after second OpenRoot = %+v, want %+v", got, other)
+	}
+
+	close(gate) // let the stale Fetch finally land
+	<-done
+
+	if got := n.Backend(); got != other {
+		t.Errorf("Backend() after stale Fetch landed = %+v, want %+v", got, other)
+	}
+	if got := n.Document(); got == nil || got.Title != "Other root" {
+		t.Errorf("Document().Title after stale Fetch landed = %v, want %q", got, "Other root")
+	}
+
+	found := false
+	for _, r := range fake.requested {
+		if r == "GET "+other.BaseURL+"shelves" {
+			t.Fatalf("Fetch's own GET was requested against other's server (%s): it must always target the backend its href was captured from, not whatever is current when fetch() actually runs", r)
+		}
+		if r == "GET "+base+"shelves" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("requested = %v, want a GET for %s", fake.requested, base+"shelves")
+	}
+}
+
+// TestRefreshDuringConcurrentOpenRootForDifferentBackendTargetsOriginalBackend
+// is Refresh's sibling: the top-of-stack frame belongs to pantry (frame.be),
+// so a Refresh started while pantry is current must keep targeting pantry
+// even if a second, different backend's OpenRoot reaches Nav's mutex first
+// and finishes while Refresh's own GET is still in flight -- proving Refresh
+// pins to the frame's own recorded backend (frame.be) rather than re-reading
+// Nav.current the way it did before p31.
+func TestRefreshDuringConcurrentOpenRootForDifferentBackendTargetsOriginalBackend(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	n.OpenRoot(testBackend())
+	// Refresh a non-root frame (pantry's "shelves") rather than the root
+	// itself: other's own legitimate root fetch below (GET other.BaseURL)
+	// would otherwise be indistinguishable, by URL alone, from a wrongly-
+	// targeted refresh of pantry's root landing on other's server.
+	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
+	n.Fetch(target.Backend, target.Href, "shelves") // stack: [root, shelves]
+
+	other := backend.Backend{Name: "other", BaseURL: "https://other.example/", Secret: "x"}
+	fake.routes[other.BaseURL] = map[string]any{
+		"title": "Other root",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/"}},
+	}
+
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	fake.block = func(_ context.Context, url string) {
+		if url != base+"shelves" {
+			return // only gate the Refresh under test, not other's root fetch
+		}
+		close(started)
+		<-gate
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.Refresh() // re-fetches pantry's "shelves" frame, base+"shelves"
+	}()
+	<-started // pantry's refresh is in flight, blocked before it returns
+
+	n.OpenRoot(other)
+	if got := n.Backend(); got != other {
+		t.Fatalf("Backend() after OpenRoot = %+v, want %+v", got, other)
+	}
+
+	close(gate) // let the stale refresh finally land
+	<-done
+
+	if got := n.Backend(); got != other {
+		t.Errorf("Backend() after stale refresh landed = %+v, want %+v", got, other)
+	}
+	if got := n.Document(); got == nil || got.Title != "Other root" {
+		t.Errorf("Document().Title after stale refresh landed = %v, want %q", got, "Other root")
+	}
+
+	found := false
+	for _, r := range fake.requested {
+		if r == "GET "+other.BaseURL+"shelves" {
+			t.Fatalf("Refresh's own GET was requested against other's server (%s): it must always target the frame's own backend (frame.be), not whatever is current when fetch() actually runs", r)
 		}
 		if r == "GET "+base+"shelves" {
 			found = true
@@ -933,7 +1119,7 @@ func TestBackCancelsInFlightFetchContext(t *testing.T) {
 	n := nav.New(fake)
 	n.OpenRoot(testBackend())
 	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
-	n.Fetch(target.Href, "shelves") // stack: [root, shelves]
+	n.Fetch(target.Backend, target.Href, "shelves") // stack: [root, shelves]
 	fake.routes[base+"deep"] = map[string]any{
 		"title": "Deep",
 		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/deep"}},
@@ -953,7 +1139,7 @@ func TestBackCancelsInFlightFetchContext(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		n.Fetch(base+"deep", "deep")
+		n.Fetch(testBackend(), base+"deep", "deep")
 	}()
 	<-started // "deep" fetch is in flight, blocked on its own ctx
 
@@ -1048,11 +1234,11 @@ func TestSecondFetchCancelsFirstsInFlightContext(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		n.Fetch(base+"first", "first")
+		n.Fetch(testBackend(), base+"first", "first")
 	}()
 	<-started // the first Fetch's GET is in flight, blocked on its own ctx
 
-	n.Fetch(base+"second", "second") // must cancel the first's ctx
+	n.Fetch(testBackend(), base+"second", "second") // must cancel the first's ctx
 
 	select {
 	case <-cancelled:
