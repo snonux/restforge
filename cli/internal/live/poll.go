@@ -42,14 +42,18 @@ func (l *Live) poll() {
 	l.handle(current, siren.EntityFromJSON(resp.Entity))
 }
 
-// handle applies one poll reply. Mirrors handle.
+// handle applies one poll reply. Mirrors handle -- the composition of
+// relevant/judgeable/running into a verdict now lives in the shared decide
+// (decide.go), also used by waitforlive.go's blockPoll; this method is the
+// thin, callback-driven wrapper around that shared verdict: log lines,
+// handler dispatch and timer (re)scheduling, none of which the blocking
+// watch wants done the same way.
 func (l *Live) handle(w *watch, entity siren.Entity) {
-	if !relevant(w, entity) {
+	switch decide(w, entity) {
+	case verdictAskAgain:
 		l.log("live: answer is about a different job, or none — asking again")
 		l.checkDeadline(w, &entity)
-		return
-	}
-	if !judgeable(entity) {
+	case verdictUnwatchable:
 		// Whatever we are polling does not report progress, so it cannot
 		// tell us the job ended. Stop watching and say we stopped -- the
 		// alternative is reading silence as completion, which is how a
@@ -58,16 +62,14 @@ func (l *Live) handle(w *watch, entity siren.Entity) {
 		if l.stopIfCurrent(w) {
 			w.handlers.OnGiveUp()
 		}
-		return
-	}
-	if !running(entity) {
+	case verdictDone:
 		l.finish(w, entity)
-		return
+	case verdictRunning:
+		if l.isCurrent(w) {
+			w.handlers.OnProgress(entity)
+		}
+		l.checkDeadline(w, &entity)
 	}
-	if l.isCurrent(w) {
-		w.handlers.OnProgress(entity)
-	}
-	l.checkDeadline(w, &entity)
 }
 
 // finish reports a watch as done. Mirrors finish.
@@ -79,26 +81,20 @@ func (l *Live) finish(w *watch, entity siren.Entity) {
 }
 
 // checkDeadline gives up when the server's own budget has run out. Returns
-// true when the watch has ended. Mirrors checkDeadline.
+// true when the watch has ended. Mirrors checkDeadline; the
+// budget-then-deadline computation itself now lives in the shared
+// deadlineExceeded (decide.go) -- this method is what poll.go does about
+// the answer: reschedule the timer, or log and fire OnGiveUp.
 func (l *Live) checkDeadline(w *watch, entity *siren.Entity) bool {
-	if entity != nil {
-		if fresh := budgetFor(*entity); fresh != nil {
-			w.budget = fresh
-		}
+	if !deadlineExceeded(w, entity, l.now()) {
+		l.scheduleIfCurrent(w)
+		return false
 	}
-	budget := FallbackBudget
-	if w.budget != nil {
-		budget = *w.budget
+	l.log(fmt.Sprintf("live: gave up after %dms", effectiveBudget(w).Milliseconds()))
+	if l.stopIfCurrent(w) {
+		w.handlers.OnGiveUp()
 	}
-	if l.now().Sub(w.startedAt) > budget {
-		l.log(fmt.Sprintf("live: gave up after %dms", budget.Milliseconds()))
-		if l.stopIfCurrent(w) {
-			w.handlers.OnGiveUp()
-		}
-		return true
-	}
-	l.scheduleIfCurrent(w)
-	return false
+	return true
 }
 
 // relevant filters out answers that are not about our job. Both cases mean

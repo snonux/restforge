@@ -28,11 +28,13 @@ import (
 // so regardless of done, exactly as the callback-based onDone/onGiveUp
 // both do.
 //
-// onProgress, when non-nil, is called with each still-running poll's entity
-// (the verdictContinue case), so a one-shot CLI can print each progress
-// step to stderr as it arrives -- the blocking analogue of Start's
-// OnProgress callback. It is never called for the terminal polls (done or
-// give-up), since those return instead of looping.
+// onProgress, when non-nil, is called with each poll reply that keeps the
+// watch going (decide's verdictAskAgain and verdictRunning cases -- an
+// answer about someone else's job counts too, the same as it always has),
+// so a one-shot CLI can print each progress step to stderr as it arrives --
+// the blocking analogue of Start's OnProgress callback. It is never called
+// for the terminal polls (done or give-up), since those return instead of
+// looping.
 //
 // err is currently always nil. A failed poll is news about the network,
 // not the job, and is never an error -- the watch keeps asking until the
@@ -83,14 +85,16 @@ func (l *Live) WaitForLive(be backend.Backend, origin Origin, result ActionOutco
 
 // blockPoll is WaitForLive's synchronous poll loop, split out so
 // WaitForLive itself stays the shape of "decide whether to watch, then
-// hand off". It reuses the same pure decision helpers poll.go's
-// handle/checkDeadline are built on -- relevant, judgeable, running,
-// budgetFor -- so a poll reply is read exactly the same way here as it is
-// by the callback-based watch; only the scheduling differs, this one
-// sleeping in real time rather than rescheduling a timer. The per-reply
-// decision lives in blockHandle/blockDeadlineDecision so this loop stays
-// short and so the budget-then-deadline ordering cannot drift from
-// poll.go's checkDeadline.
+// hand off". It reads each poll reply through the same shared decide/
+// deadlineExceeded pair poll.go's handle/checkDeadline are built on
+// (decide.go), so a reply means the same thing here as it does to the
+// callback-based watch; only the scheduling differs, this one sleeping in
+// real time rather than rescheduling a timer, and returning instead of
+// dispatching Handlers. Used to have its own blockHandle/
+// blockDeadlineDecision/blockDeadlineExceeded trio recomputing that same
+// verdict independently -- task m31 folded the two computations into one,
+// since keeping them consistent by hand was exactly the drift risk this
+// package's own comments used to warn about.
 func (l *Live) blockPoll(be backend.Backend, w *watch, onProgress func(siren.Entity)) (siren.Entity, bool, error) {
 	for {
 		resp, err := l.http.Get(be, w.href)
@@ -100,7 +104,7 @@ func (l *Live) blockPoll(be backend.Backend, w *watch, onProgress func(siren.Ent
 			// re-derived here: the failure carries no entity, the same as
 			// poll.go's checkDeadline(current, nil) on a failed poll.
 			l.log(fmt.Sprintf("live: poll failed (%s), still watching", failureKind(err)))
-			if l.blockDeadlineDecision(w, nil) == verdictGaveUp {
+			if deadlineExceeded(w, nil, time.Now()) {
 				return siren.Entity{}, false, nil
 			}
 			time.Sleep(PollInterval)
@@ -108,90 +112,29 @@ func (l *Live) blockPoll(be backend.Backend, w *watch, onProgress func(siren.Ent
 		}
 
 		entity := siren.EntityFromJSON(resp.Entity)
-		switch v, result := l.blockHandle(w, entity); v {
-		case verdictContinue:
+		switch decide(w, entity) {
+		case verdictUnwatchable:
+			// Nothing here reports progress -- stop, the same way
+			// poll.go's handle does rather than read silence as
+			// completion.
+			l.log("live: nothing here reports progress, stopping")
+			return entity, false, nil
+		case verdictDone:
+			l.log(fmt.Sprintf("live: finished (%v)", entity.Properties["state"]))
+			return entity, true, nil
+		default:
+			// verdictAskAgain or verdictRunning: still eligible to
+			// continue, subject to the deadline. The budget IS re-derived
+			// from this reply first (matching poll.go's
+			// checkDeadline(w, &entity)), so even a !relevant answer that
+			// carries a fresh staleAfterSeconds tightens the deadline.
+			if deadlineExceeded(w, &entity, time.Now()) {
+				return siren.Entity{}, false, nil
+			}
 			if onProgress != nil {
 				onProgress(entity)
 			}
 			time.Sleep(PollInterval)
-		case verdictDone:
-			return result, true, nil
-		case verdictGaveUp:
-			return result, false, nil
 		}
 	}
-}
-
-// verdict is what blockPoll does with one poll reply. Mirrors the three
-// terminal/reschedule branches of poll.go's handle+checkDeadline, minus the
-// goroutine/callback scheduling those carry.
-type verdict int
-
-const (
-	// verdictContinue: still watching -- sleep and poll again.
-	verdictContinue verdict = iota
-	// verdictDone: the server said the job finished -- return done=true.
-	verdictDone
-	// verdictGaveUp: nothing reports progress, or the deadline ran out --
-	// return done=false.
-	verdictGaveUp
-)
-
-// blockHandle applies one poll reply to w and returns the verdict plus the
-// entity to return for a terminal verdict (the zero entity for
-// verdictContinue, since the caller polls again). Mirrors poll.go's handle,
-// with the deadline/reschedule step folded into blockDeadlineDecision
-// rather than scheduled onto a timer.
-func (l *Live) blockHandle(w *watch, entity siren.Entity) (verdict, siren.Entity) {
-	if !relevant(w, entity) {
-		// About a different job, or none -- ask again, same as poll.go's
-		// handle does. The budget IS re-derived from this reply first
-		// (matching checkDeadline(w, &entity)) so a !relevant answer that
-		// carries a fresh staleAfterSeconds still tightens the deadline.
-		return l.blockDeadlineDecision(w, &entity), siren.Entity{}
-	}
-	if !judgeable(entity) {
-		// Nothing here reports progress -- stop, the same way handle's
-		// !judgeable branch gives up rather than reading silence as
-		// completion.
-		l.log("live: nothing here reports progress, stopping")
-		return verdictGaveUp, entity
-	}
-	if !running(entity) {
-		l.log(fmt.Sprintf("live: finished (%v)", entity.Properties["state"]))
-		return verdictDone, entity
-	}
-	// Still running: re-derive the budget from this poll (an early poll
-	// that landed on a machine with no job carries none; a later one will
-	// -- same rule checkDeadline follows), check the deadline, and ask
-	// again if there is time left.
-	return l.blockDeadlineDecision(w, &entity), siren.Entity{}
-}
-
-// blockDeadlineDecision re-derives w.budget from entity (when non-nil) and
-// returns verdictContinue when the deadline has not run out, verdictGaveUp
-// when it has. The synchronous analogue of poll.go's checkDeadline minus its
-// reschedule/handler firing, kept as one home so the budget-then-deadline
-// ordering this package relies on cannot drift between the two watches.
-func (l *Live) blockDeadlineDecision(w *watch, entity *siren.Entity) verdict {
-	if entity != nil {
-		if fresh := budgetFor(*entity); fresh != nil {
-			w.budget = fresh
-		}
-	}
-	if l.blockDeadlineExceeded(w) {
-		return verdictGaveUp
-	}
-	return verdictContinue
-}
-
-// blockDeadlineExceeded is WaitForLive's deadline check, the synchronous
-// analogue of poll.go's checkDeadline: true when the server's own budget
-// (or the generous FallbackBudget when none was ever seen) has run out.
-func (l *Live) blockDeadlineExceeded(w *watch) bool {
-	budget := FallbackBudget
-	if w.budget != nil {
-		budget = *w.budget
-	}
-	return time.Since(w.startedAt) > budget
 }

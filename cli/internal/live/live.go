@@ -84,9 +84,9 @@ type watch struct {
 	// carried none. Compared against later replies by relevant.
 	id any
 
-	// budget is the current deadline budget, re-derived by checkDeadline on
-	// every poll that carries one. nil means "no budget seen yet, use
-	// FallbackBudget".
+	// budget is the current deadline budget, re-derived by deadlineExceeded
+	// (decide.go) on every poll that carries one. nil means "no budget seen
+	// yet, use FallbackBudget".
 	budget *time.Duration
 
 	startedAt time.Time
