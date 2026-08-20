@@ -350,11 +350,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Document screen's row list, the ValuePrompt screen's input and
 		// the Detail screen's viewport from whatever Session shows now,
 		// the same call every other Session-mutating branch in Update
-		// makes. See documentModel.syncRows's own doc comment for why
-		// this is cheap even when nothing actually changed.
-		m.document = m.document.syncRows(m.session.Document())
-		m.valuePrompt = m.valuePrompt.syncFromSession(m.session.Question())
-		m.detail = m.detail.syncFromSession(m.session.Detail())
+		// makes. Delegates to resyncDocumentScreen (the same helper
+		// sessionUpdatedMsg/homeOpenedMsg/homeQuickRanMsg all call) instead
+		// of re-listing its three syncs here, so "resync all overlays" has
+		// exactly one implementation -- see resyncDocumentScreen's own doc
+		// comment for why this is cheap even when nothing actually changed.
+		m = m.resyncDocumentScreen()
 		return m, nil
 	}
 	return m.dispatchToScreen(msg)

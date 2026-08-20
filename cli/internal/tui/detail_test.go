@@ -206,3 +206,32 @@ func TestModelIntegrationBackDismissesDetailReturnsToDocument(t *testing.T) {
 		t.Errorf("currentScreen() = %v, want screenDocument once Detail is dismissed", nm.currentScreen())
 	}
 }
+
+// TestModelIntegrationBackResyncsDetailModelNotJustSession is j31's
+// regression test: it was added when Model.handleKey's global-Back branch
+// was found re-implementing resyncDocumentScreen's three-line body inline
+// instead of calling it (SOLID audit finding j31), which left the two
+// "resync all overlays" bodies free to drift out of sync by hand. Session
+// state alone (checked by
+// TestModelIntegrationBackDismissesDetailReturnsToDocument above) cannot
+// catch that drift, since Session.Detail() going nil is true regardless of
+// whether m.detail itself was ever told about it -- so this asserts
+// directly on detailModel.shown, the field syncFromSession(nil) clears,
+// which would stay stale (pointing at the just-dismissed DetailView) if a
+// future overlay resync were dropped from one of the two copies again.
+func TestModelIntegrationBackResyncsDetailModelNotJustSession(t *testing.T) {
+	m := detailFixture()
+	m.session.Activate(render.DetailTarget{Heading: "description", Body: "the full value"})
+	m.document = m.document.syncRows(m.session.Document())
+	m.detail = m.detail.syncFromSession(m.session.Detail())
+	if m.detail.shown == nil {
+		t.Fatal("test setup: expected detailModel.shown to be set after syncFromSession with an open Detail")
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	nm := next.(Model)
+
+	if nm.detail.shown != nil {
+		t.Error("the global Back key dismissed Session.Detail() but left detailModel.shown pointing at the stale DetailView -- handleKey's Back branch must resync detailModel, not just Session")
+	}
+}
