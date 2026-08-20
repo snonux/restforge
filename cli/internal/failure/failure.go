@@ -109,3 +109,38 @@ type Failure struct {
 func (f *Failure) Error() string {
 	return fmt.Sprintf("%s (status %d): %s", f.Kind, f.Status, f.Message)
 }
+
+// From coerces err into a *Failure: unwrapped unchanged when it already is
+// one, or wrapped with fallback as its Kind and err.Error() as its Message
+// otherwise.
+//
+// This exists for one narrow reason. Every seam this app injects an error
+// through in production -- httpclient.Client.Get/Request, and so
+// nav.httpGetter, action.requester and live.httpGetter, which are all
+// backed by it -- always returns *Failure on error; see the package
+// comment. But each of those packages also accepts a hand-rolled test
+// double behind that seam, and nothing stops one from returning a plain
+// error instead. Before this helper existed, action, nav and live each
+// wrote their own "type-assert to *Failure, else synthesize one" fallback
+// inline at the one or two call sites that needed it -- and, having been
+// written independently, silently disagreed on what Kind the synthesized
+// Failure should carry for what is meant to be the identical defensive
+// case. That is a decision worth making once, consciously, rather than
+// three times by accident.
+//
+// fallback stays a parameter rather than a single package-wide constant so
+// that decision stays visible at each call site instead of being buried in
+// here -- but action, nav and live all pass [Config] for it today: this
+// fallback only ever fires for a non-conforming test double, never for a
+// real network or server outcome, so it is a local problem with how the
+// call was set up, not a report about a server or connection --
+// [Config]'s own meaning ("the request could not even be built... a local
+// configuration problem"). A future fourth caller should default to
+// [Config] too unless it has a specific reason not to, so the fallback
+// Kind stays one conscious choice, not four independent ones.
+func From(err error, fallback Kind) *Failure {
+	if f, ok := err.(*Failure); ok {
+		return f
+	}
+	return &Failure{Kind: fallback, Message: err.Error()}
+}

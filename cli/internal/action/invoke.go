@@ -224,14 +224,13 @@ func (a *Action) afterSend(be backend.Backend, href, method string, values map[s
 }
 
 // toFailure converts an error from the injected requester into a
-// *failure.Failure, falling back to a synthetic Kind: Config failure if it
-// is ever some other error type. *httpclient.Client always returns
-// *failure.Failure on error today; this fallback only exists so a test
-// double behind requester cannot panic this package by returning some
-// other error type.
+// *failure.Failure, via the shared failure.From -- falling back to
+// Kind: Config if it is ever some other error type. *httpclient.Client
+// always returns *failure.Failure on error today; this fallback only
+// exists so a test double behind requester cannot panic this package by
+// returning some other error type. Config is the fallback nav and live use
+// too, for the same defensive case -- see failure.From's doc comment for
+// why that is one conscious choice rather than three independent ones.
 func toFailure(err error) *failure.Failure {
-	if f, ok := err.(*failure.Failure); ok {
-		return f
-	}
-	return &failure.Failure{Kind: failure.Config, Message: err.Error()}
+	return failure.From(err, failure.Config)
 }

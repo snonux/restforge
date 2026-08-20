@@ -151,16 +151,16 @@ func idsEqual(a, b any) bool {
 }
 
 // failureKind names why a poll failed, for the log line -- mirrors reading
-// error.kind in live.js/live_service.dart. Falls back to the error's own
-// message on anything that is not a *failure.Failure, which httpGetter.Get
-// always returns on error in production; the fallback only exists so a
-// hand-rolled test double cannot panic this package by returning some other
-// error type.
+// error.kind in live.js/live_service.dart. Coerces err through the shared
+// failure.From rather than hand-rolling the type assertion, falling back
+// to Kind: Config on anything that is not a *failure.Failure, which
+// httpGetter.Get always returns on error in production; the fallback only
+// exists so a hand-rolled test double cannot panic this package by
+// returning some other error type -- the same fallback action and nav use
+// for their own equivalent seams, see failure.From's doc comment for why
+// that is one conscious choice rather than three independent ones.
 func failureKind(err error) string {
-	if f, ok := err.(*failure.Failure); ok {
-		return f.Kind.String()
-	}
-	return err.Error()
+	return failure.From(err, failure.Config).Kind.String()
 }
 
 // isCurrent reports whether w is still the watch Live is driving.

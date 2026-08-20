@@ -102,3 +102,40 @@ func TestKindUnknown(t *testing.T) {
 		t.Errorf("String() = %q, want %q", got, want)
 	}
 }
+
+// TestFromUnwrapsAnExistingFailure checks that a *Failure passed through
+// From comes back exactly as given -- fallback is never consulted, and
+// nothing about it (Status, Message) is altered.
+func TestFromUnwrapsAnExistingFailure(t *testing.T) {
+	want := &failure.Failure{Kind: failure.Conflict, Status: 409, Message: "stale"}
+
+	got := failure.From(want, failure.Config)
+
+	if got != want {
+		t.Errorf("From() = %p, want the same *Failure %p back, unchanged", got, want)
+	}
+}
+
+// TestFromSynthesizesTheFallbackKind checks that a plain, non-*Failure
+// error is wrapped with the caller-supplied fallback Kind and the error's
+// own message -- this is the shared behavior action.toFailure,
+// nav.applyFailureLocked and live.failureKind now all depend on, in place
+// of independently hand-rolling the same type assertion (and, before this
+// helper existed, silently disagreeing on the fallback Kind for what is
+// meant to be the identical defensive case -- see this function's doc
+// comment).
+func TestFromSynthesizesTheFallbackKind(t *testing.T) {
+	err := errors.New("some other error type")
+
+	got := failure.From(err, failure.Server)
+
+	if got.Kind != failure.Server {
+		t.Errorf("Kind = %v, want %v", got.Kind, failure.Server)
+	}
+	if got.Message != err.Error() {
+		t.Errorf("Message = %q, want %q", got.Message, err.Error())
+	}
+	if got.Status != 0 {
+		t.Errorf("Status = %d, want 0: a synthesized Failure never received an HTTP response", got.Status)
+	}
+}

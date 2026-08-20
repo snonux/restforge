@@ -22,6 +22,7 @@
 package nav_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/snonux/restforge/cli/internal/backend"
@@ -88,6 +89,13 @@ type fakeClient struct {
 	requested   []string
 	unreachable bool
 
+	// plainErr, when set, is returned as-is instead of consulting routes --
+	// a plain, non-*failure.Failure error, standing in for a hand-rolled
+	// test double that does not follow httpGetter's contract. Used only by
+	// the applyFailureLocked fallback-Kind test; every other test leaves it
+	// nil and gets routes/unreachable's usual *failure.Failure errors.
+	plainErr error
+
 	// block, when set, is called with the resolved target as Get is
 	// entered, before routes is consulted -- the hook the "state
 	// transitions" tests use to hold a fetch in flight.
@@ -106,6 +114,9 @@ func (f *fakeClient) Get(be backend.Backend, href string) (httpclient.HTTPRespon
 	f.requested = append(f.requested, "GET "+target)
 	if f.block != nil {
 		f.block(target)
+	}
+	if f.plainErr != nil {
+		return httpclient.HTTPResponse{}, f.plainErr
 	}
 	if f.unreachable {
 		return httpclient.HTTPResponse{}, &failure.Failure{Kind: failure.Unreachable, Message: "no answer from " + target}
@@ -193,6 +204,29 @@ func TestUnsupportedAPIVersionRootIsNotPushed(t *testing.T) {
 	}
 	if n.Document() != nil {
 		t.Errorf("Document() = %v, want nil: nothing was pushed", n.Document())
+	}
+}
+
+// TestAPlainGetErrorFallsBackToTheSharedKind checks applyFailureLocked's
+// fallback for a hand-rolled test double (or, in principle, some future
+// httpGetter implementation) that returns a plain error instead of the
+// *failure.Failure httpclient.Client always returns in production: it
+// must land on Kind: Config, the fallback failure.From's doc comment
+// documents as the one shared, conscious choice for action, nav and
+// live's identical defensive case, rather than nav silently picking its
+// own (previously Kind: Client here).
+func TestAPlainGetErrorFallsBackToTheSharedKind(t *testing.T) {
+	fake := newFakeClient()
+	fake.plainErr = errors.New("boom")
+	n := nav.New(fake)
+
+	n.OpenRoot(testBackend())
+
+	if n.State() != nav.StateError {
+		t.Errorf("State() = %v, want StateError", n.State())
+	}
+	if n.Failure() == nil || n.Failure().Kind != failure.Config {
+		t.Errorf("Failure() = %v, want kind Config", n.Failure())
 	}
 }
 

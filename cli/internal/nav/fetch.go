@@ -338,16 +338,17 @@ func (n *Nav) applyFailureIfCurrent(gen uint64, err error) {
 }
 
 // applyFailureLocked records err as the reason the last fetch did not land,
-// mapping its Kind onto a DocumentState via StateFor. httpGetter.Get always
-// returns a *failure.Failure on error (see httpclient's package comment);
-// the type-assertion fallback exists only so a hand-rolled test double that
-// returns a plain error still degrades to something sensible rather than
-// panicking. Caller must hold n.mu.
+// mapping its Kind onto a DocumentState via StateFor. Coerces err through
+// the shared failure.From rather than hand-rolling the type assertion:
+// httpGetter.Get always returns a *failure.Failure on error (see
+// httpclient's package comment), so the Kind: Config fallback exists only
+// so a hand-rolled test double that returns a plain error still degrades
+// to something sensible rather than panicking -- the same fallback action
+// and live use for their own equivalent seams, see failure.From's doc
+// comment for why that is one conscious choice rather than three
+// independent ones. Caller must hold n.mu.
 func (n *Nav) applyFailureLocked(err error) {
-	f, ok := err.(*failure.Failure)
-	if !ok {
-		f = &failure.Failure{Kind: failure.Client, Message: err.Error()}
-	}
+	f := failure.From(err, failure.Config)
 	n.state = StateFor(f.Kind)
 	n.failure = f
 }
