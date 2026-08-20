@@ -70,28 +70,19 @@ func (m Model) isTextEntryScreen() bool {
 }
 
 // currentFilterState reports the list.FilterState of whichever screen-owned
-// bubbles/list.Model is current -- Home's focused list, Document's row
-// list, or Settings' backend list while settingsModeList is current -- or
-// list.Unfiltered for a screen with no list of its own (Confirm,
-// ValuePrompt, Detail, and Settings while settingsModeEdit is current).
-// Model.handleKey uses this to decide, on every keystroke, whether the
-// shell's global bindings, the vi remap above, and a screen's own Enter/d/s
-// overrides apply at all, or whether the key belongs to list.Model's own
-// filter input instead -- see handleKey's own doc comment for exactly which
-// keys defer and when.
+// bubbles/list.Model is current -- see currentListModel's own doc comment
+// (model.go) for exactly which one that is and why this delegates to it
+// rather than running its own copy of that switch -- or list.Unfiltered for
+// a screen with no list of its own (Confirm, ValuePrompt, Detail, and
+// Settings while settingsModeEdit is current). Model.handleKey uses this to
+// decide, on every keystroke, whether the shell's global bindings, the vi
+// remap above, and a screen's own Enter/d/s overrides apply at all, or
+// whether the key belongs to list.Model's own filter input instead -- see
+// handleKey's own doc comment for exactly which keys defer and when.
 func (m Model) currentFilterState() list.FilterState {
-	switch m.currentScreen() {
-	case screenHome:
-		if m.home.focus == homeFocusQuick {
-			return m.home.shortcuts.FilterState()
-		}
-		return m.home.backends.FilterState()
-	case screenDocument:
-		return m.document.rows.FilterState()
-	case screenSettings:
-		if m.settings.mode == settingsModeList {
-			return m.settings.list.FilterState()
-		}
+	lm := m.currentListModel()
+	if lm == nil {
+		return list.Unfiltered
 	}
-	return list.Unfiltered
+	return lm.FilterState()
 }

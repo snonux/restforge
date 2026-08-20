@@ -185,32 +185,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // applyFilterMatches forwards msg to whichever screen-owned list.Model is
-// current -- Home's focused list, Document's row list, or Settings' backend
-// list while settingsModeList is current -- mirroring currentFilterState's
-// own routing (vikeys.go), since a FilterMatchesMsg only ever means
-// anything to the list that started the filterItems cmd producing it. A
-// message that lands after the user has navigated away from that list
-// (Confirm/ValuePrompt/Detail/Settings' own edit mode all have none) is
-// simply dropped -- there is nowhere for it to go and nothing on screen it
-// could affect.
+// current -- see currentListModel's own doc comment for exactly which one
+// that is -- since a FilterMatchesMsg only ever means anything to the list
+// that started the filterItems cmd producing it. A message that lands after
+// the user has navigated away from that list (Confirm/ValuePrompt/Detail/
+// Settings' own edit mode all have none) is simply dropped -- there is
+// nowhere for it to go and nothing on screen it could affect.
 func (m Model) applyFilterMatches(msg list.FilterMatchesMsg) (tea.Model, tea.Cmd) {
+	lm := m.currentListModel()
+	if lm == nil {
+		return m, nil
+	}
 	var cmd tea.Cmd
+	*lm, cmd = lm.Update(msg)
+	return m, cmd
+}
+
+// currentListModel returns a pointer to whichever screen-owned bubbles/
+// list.Model is current -- Home's focused list (backends or shortcuts,
+// picked by home.focus), Document's row list, or Settings' backend list
+// while settingsModeList is current -- or nil when the current screen has
+// no list.Model of its own (Confirm, ValuePrompt, Detail, and Settings
+// while settingsModeEdit is current).
+//
+// This is the single place that answers "which list is active": both
+// applyFilterMatches above and currentFilterState (vikeys.go) delegate to
+// it instead of each running their own copy of this switch, so a new
+// list-bearing screen only needs to be wired in here once -- previously the
+// two switches could drift out of sync silently (no compiler error), which
+// would leave list.FilterMatchesMsg routing broken for whichever screen the
+// forgotten case belonged to; see k31's finding for the incident this
+// closes.
+//
+// Pointer receiver, unlike this package's usual value-receiver convention
+// (see Model's own doc comment): the whole point is to hand back an
+// address into the caller's own m so *lm = ... in applyFilterMatches
+// mutates the right copy -- a value receiver here would only ever return a
+// pointer into this method's own throwaway copy of m.
+func (m *Model) currentListModel() *list.Model {
 	switch m.currentScreen() {
 	case screenHome:
-		switch m.home.focus {
-		case homeFocusBackends:
-			m.home.backends, cmd = m.home.backends.Update(msg)
-		case homeFocusQuick:
-			m.home.shortcuts, cmd = m.home.shortcuts.Update(msg)
+		if m.home.focus == homeFocusQuick {
+			return &m.home.shortcuts
 		}
+		return &m.home.backends
 	case screenDocument:
-		m.document.rows, cmd = m.document.rows.Update(msg)
+		return &m.document.rows
 	case screenSettings:
 		if m.settings.mode == settingsModeList {
-			m.settings.list, cmd = m.settings.list.Update(msg)
+			return &m.settings.list
 		}
 	}
-	return m, cmd
+	return nil
 }
 
 // applyWindowSize forwards a tea.WindowSizeMsg to every screen's own
