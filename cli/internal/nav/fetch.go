@@ -17,6 +17,8 @@ import (
 // openBackend.
 func (n *Nav) OpenRoot(be backend.Backend) {
 	n.mu.Lock()
+	n.generation++
+	gen := n.generation
 	n.stack = nil
 	n.current = be
 	n.state = StateLoading
@@ -25,9 +27,11 @@ func (n *Nav) OpenRoot(be backend.Backend) {
 
 	resp, err := n.http.Get(be, be.BaseURL)
 	if err != nil {
-		n.mu.Lock()
-		n.applyFailureLocked(err)
-		n.mu.Unlock()
+		// A second OpenRoot/Adopt/Back/Fetch may have run while this GET
+		// was in flight -- see Nav.generation. If so, this failure is not
+		// about the backend a caller is looking at any more; applying it
+		// would show an error for the wrong server.
+		n.applyFailureIfCurrent(gen, err)
 		return
 	}
 
@@ -37,17 +41,20 @@ func (n *Nav) OpenRoot(be backend.Backend) {
 	// something it would otherwise display confidently and wrongly --
 	// mirrors the siren.versionProblem check in fetchRoot.
 	if problem := entity.VersionProblem(); problem != "" {
-		n.mu.Lock()
-		n.state = StateError
-		n.failure = &failure.Failure{Kind: failure.Client, Message: problem}
-		n.mu.Unlock()
+		n.applyFailureIfCurrent(gen, &failure.Failure{Kind: failure.Client, Message: problem})
 		return
 	}
 
-	n.mu.Lock()
-	n.pushLocked(entity, be.BaseURL, be.Name)
-	n.mu.Unlock()
-	n.followStart(be, entity)
+	if !n.pushIfCurrent(gen, entity, be.BaseURL, be.Name) {
+		// Superseded while the GET was in flight: some other call already
+		// reset n.stack/n.current out from under this one (see
+		// Nav.generation). be's root must not be pushed on top of
+		// whatever that call left behind, and followStart below must not
+		// run at all -- see followStart's own doc comment for why gen is
+		// threaded through to it rather than letting it read n.current.
+		return
+	}
+	n.followStart(be, entity, gen)
 }
 
 // followStart follows the link with rel be.StartRel on the freshly-fetched
@@ -57,7 +64,21 @@ func (n *Nav) OpenRoot(be backend.Backend) {
 // docs/DESIGN.md carves out -- mirrors followStart in nav.js. A missing rel
 // is not a failure: the server may simply not offer it right now, which is
 // a legitimate answer, not something to route around.
-func (n *Nav) followStart(be backend.Backend, root siren.Entity) {
+//
+// gen is the generation OpenRoot's own push was still current under. It is
+// re-checked here, under lock, before this call's own GET is even issued --
+// closing the gap between pushIfCurrent's unlock and this call that a bare
+// "call fetch() and let it read n.current" would leave open: without this
+// check, a second OpenRoot/Adopt for a different backend landing in that
+// gap would make fetch() send be.StartRel's href to whatever backend is
+// current *now* (wrong BaseURL for a relative href, wrong auth secret),
+// not the be this root came from. Passing be explicitly through to
+// fetchAndApply (rather than fetch(), which reads n.current) keeps this
+// call pinned to be for its own GET even though n.current may move on to a
+// different backend while that GET is still in flight -- the generation
+// check on the way back in still discards the result if that happens, the
+// same as any other fetch.
+func (n *Nav) followStart(be backend.Backend, root siren.Entity, gen uint64) {
 	if be.StartRel == "" {
 		return
 	}
@@ -65,7 +86,19 @@ func (n *Nav) followStart(be backend.Backend, root siren.Entity) {
 	if href == "" {
 		return
 	}
-	n.fetch(href, be.StartRel, false)
+
+	n.mu.Lock()
+	if n.generation != gen {
+		n.mu.Unlock()
+		return
+	}
+	n.generation++
+	fetchGen := n.generation
+	n.state = StateLoading
+	n.failure = nil
+	n.mu.Unlock()
+
+	n.fetchAndApply(be, fetchGen, href, be.StartRel, false)
 }
 
 // Fetch follows href and pushes the result on top of the stack -- mirrors
@@ -86,6 +119,12 @@ func (n *Nav) Fetch(href, title string) {
 func (n *Nav) Adopt(be backend.Backend) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	// Bumps generation before resetting the stack so that any fetch still
+	// in flight for the backend being switched away from (e.g. a slow
+	// followStart from an earlier OpenRoot) finds itself stale once it
+	// lands and discards its result instead of pushing onto be's stack --
+	// see Nav.generation.
+	n.generation++
 	n.stack = nil
 	n.current = be
 	n.state = StateOK
@@ -130,6 +169,10 @@ func (n *Nav) OpenEmbedded(index int) {
 	if index < 0 || index >= len(entities) {
 		return
 	}
+	// Bumps generation before pushing: a fetch already in flight when the
+	// user opens this embedded entity must not land afterwards and shove
+	// its own frame on top of the one just opened -- see Nav.generation.
+	n.generation++
 	child := entities[index]
 	n.pushLocked(child, child.Follow("self"), child.Label())
 }
@@ -147,6 +190,11 @@ func (n *Nav) Back() {
 	if len(n.stack) <= 1 {
 		return
 	}
+	// Bumped before the pop: this is precisely the scenario the bug this
+	// package's generation guard fixes -- a Fetch/Refresh/OpenRoot started
+	// before the user pressed Back must not land afterwards and silently
+	// override the Back the user actually asked for -- see Nav.generation.
+	n.generation++
 	last := len(n.stack) - 1
 	// Zeroed before the re-slice: shrinking a slice by re-slicing alone
 	// leaves the dropped element's frame (including its siren.Entity,
@@ -161,35 +209,86 @@ func (n *Nav) Back() {
 	n.failure = nil
 }
 
-// fetch performs one fetch and applies its outcome to the stack. Shared by
-// Fetch (push), Refresh (replace) and followStart (push) -- mirrors
-// nav.js's single fetch(href, title, replace).
+// fetch performs one fetch against whatever backend is current right now,
+// and applies its outcome to the stack. Shared by Fetch (push) and Refresh
+// (replace) -- mirrors nav.js's single fetch(href, title, replace).
+// followStart does not go through here -- see its own doc comment for why
+// it needs a fixed backend rather than n.current.
+//
+// Known boundary of the staleness guard: href is chosen by the caller (a
+// row the user pressed, captured from whatever document was on screen at
+// that moment) but current is read fresh, right here, not carried in from
+// the caller. Fetch/Refresh have no backend parameter of their own to pin
+// the way followStart pins be -- see Session.Activate/Session.Refresh,
+// which call them with only an href, never a backend.Backend, because
+// render.FetchTarget (what a pressed row's target actually is) carries no
+// backend either. In the extremely narrow case where a second call already
+// switched n.current to a different backend by the time this fetch()'s own
+// lock/bump runs -- even though that second call was issued strictly later
+// by the user -- href (meant for the backend on screen when it was
+// captured) would be sent to that different backend, and the generation
+// guard cannot catch it, since this call's own bump is the newest one at
+// that point. Closing this fully would mean threading backend.Backend
+// through render.FetchTarget and Session's own API, not just this
+// package's guard; out of scope here -- see i31 for the guard this
+// function does provide, and its own annotations for why this residual
+// case was tracked as a follow-up instead of folded in.
 //
 // A failure never touches the stack: Document keeps reading whatever was
 // there before this call, which is precisely the invariant this package
 // exists to protect -- see the package comment.
 func (n *Nav) fetch(href, title string, replace bool) {
 	n.mu.Lock()
+	// Bumping generation here, not just in Back/OpenRoot/Adopt/OpenEmbedded,
+	// is what makes two concurrent fetches (e.g. a second Fetch fired
+	// before the first returns) resolve to "the one that started last
+	// wins": whichever fetch's HTTP round trip lands first will find its
+	// captured gen no longer equal to n.generation once the other one has
+	// started, and discard its result -- see Nav.generation.
+	n.generation++
+	gen := n.generation
 	n.state = StateLoading
 	n.failure = nil
 	current := n.current
 	n.mu.Unlock()
 
-	// The HTTP round trip runs with the lock released -- see the package's
-	// mu doc comment -- so a concurrent View render keeps reading whatever
-	// State/Document this call has committed so far (StateLoading, and the
-	// last-good Document beneath it) instead of blocking for the duration
-	// of the request.
-	resp, err := n.http.Get(current, href)
+	n.fetchAndApply(current, gen, href, title, replace)
+}
+
+// fetchAndApply performs the GET against be and applies the result to the
+// stack, but only if gen is still the live generation once the round trip
+// returns -- see Nav.generation. Caller must have already bumped
+// n.generation to gen (and set State/Failure for the loading phase) before
+// calling this; it exists only to share the GET-then-guarded-apply shape
+// between fetch() (which reads be from n.current) and followStart (which
+// cannot: see its own doc comment).
+func (n *Nav) fetchAndApply(be backend.Backend, gen uint64, href, title string, replace bool) {
+	// The HTTP round trip runs with no lock held -- see the package's mu
+	// doc comment -- so a concurrent View render keeps reading whatever
+	// State/Document the caller committed before calling this (StateLoading,
+	// and the last-good Document beneath it) instead of blocking for the
+	// duration of the request.
+	resp, err := n.http.Get(be, href)
 	if err != nil {
-		n.mu.Lock()
-		n.applyFailureLocked(err)
-		n.mu.Unlock()
+		// Superseded while the GET was in flight (a Back, a second
+		// Fetch/Refresh/followStart, or an OpenRoot/Adopt for a different
+		// backend) -- see Nav.generation. The failure is not about
+		// whatever is on screen now, so it must not be applied to it.
+		n.applyFailureIfCurrent(gen, err)
 		return
 	}
 
 	entity := siren.EntityFromJSON(resp.Entity)
 	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.generation != gen {
+		// Same guard as above, for the success path: n.stack may have
+		// been reset or popped by something else while this GET was in
+		// flight, and appending/replacing onto it now would silently
+		// override whatever that something else did -- exactly the bug
+		// this generation counter exists to prevent.
+		return
+	}
 	if replace && len(n.stack) > 0 {
 		n.stack[len(n.stack)-1] = frame{entity: entity, href: href, title: title}
 	} else {
@@ -197,7 +296,6 @@ func (n *Nav) fetch(href, title string, replace bool) {
 	}
 	n.state = StateOK
 	n.failure = nil
-	n.mu.Unlock()
 }
 
 // pushLocked appends entity onto the stack and marks it the new current
@@ -206,6 +304,37 @@ func (n *Nav) pushLocked(entity siren.Entity, href, title string) {
 	n.stack = append(n.stack, frame{entity: entity, href: href, title: title})
 	n.state = StateOK
 	n.failure = nil
+}
+
+// pushIfCurrent pushes entity onto the stack and reports true, but only if
+// gen still matches n.generation -- guarding OpenRoot's push against a
+// second OpenRoot/Adopt/Back/Fetch that ran while its HTTP round trip was
+// in flight, the same way fetch() guards its own push. Returns false when
+// superseded, in which case the caller must not treat entity as
+// authoritative for anything further -- see OpenRoot's use of this before
+// followStart.
+func (n *Nav) pushIfCurrent(gen uint64, entity siren.Entity, href, title string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.generation != gen {
+		return false
+	}
+	n.pushLocked(entity, href, title)
+	return true
+}
+
+// applyFailureIfCurrent applies err as the reason a fetch did not land, but
+// only if gen still matches n.generation -- see Nav.generation. Shared by
+// OpenRoot's two failure branches (a transport error, and a version
+// problem the entity itself reports) and fetchAndApply's, so the
+// lock/check/apply shape is not repeated inline at each call site.
+func (n *Nav) applyFailureIfCurrent(gen uint64, err error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.generation != gen {
+		return
+	}
+	n.applyFailureLocked(err)
 }
 
 // applyFailureLocked records err as the reason the last fetch did not land,

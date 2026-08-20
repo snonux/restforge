@@ -42,6 +42,26 @@ type Nav struct {
 	current backend.Backend
 	state   DocumentState
 	failure *failure.Failure
+
+	// generation is bumped by every call that may invalidate an in-flight
+	// fetch: fetch() (Fetch/Refresh), followStart and OpenRoot all bump it
+	// themselves for their own GET, and OpenRoot, Adopt, Back and
+	// OpenEmbedded also bump it as the first thing they do under the lock
+	// even when they perform no I/O of their own, purely to invalidate
+	// whatever fetch might already be in flight. fetch() and followStart
+	// (through the fetchAndApply helper both funnel into) capture the
+	// value their own bump produced before releasing the lock for their
+	// HTTP round trip, then compare it against the live value once the
+	// round trip returns; a mismatch means some other call ran in the
+	// meantime (a second Fetch/OpenRoot, or a synchronous Back/Adopt/
+	// OpenEmbedded that reset the stack), so this response is stale and
+	// must be discarded rather than applied on top of state it no longer
+	// corresponds to. Mirrors internal/live's
+	// isCurrent/stopIfCurrent/scheduleIfCurrent pattern, using a counter
+	// instead of pointer identity since Nav has no single per-call object
+	// (like live's *watch) to compare against -- every mutating call
+	// shares the same n.stack/n.current instead.
+	generation uint64
 }
 
 // New builds a Nav that performs its fetches through client. Starts with no

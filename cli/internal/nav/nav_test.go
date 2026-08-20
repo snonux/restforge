@@ -524,6 +524,354 @@ func TestDocumentUntouchedWhileFetchInFlight(t *testing.T) {
 	}
 }
 
+// --- staleness: a superseded fetch must not win ---------------------------
+//
+// i31: nav's async fetches (Fetch/Refresh/OpenRoot, all funneled through
+// fetch()/fetchAndApply()) used to have no staleness guard, unlike
+// internal/live's isCurrent/stopIfCurrent pattern. These tests reproduce
+// the bug report's concrete scenarios -- (1) the user presses Back while an
+// earlier Fetch/Activate is still in flight, on both the success and
+// failure branch, (2) two concurrent OpenRoot calls race for two different
+// backends, (3) the same race against Adopt and against OpenEmbedded, the
+// two other calls the fix also guards -- plus (4) a follow-up scenario the
+// fix's own code review surfaced: OpenRoot's chained followStart fetch must
+// keep targeting the backend it was opened for, not whatever backend is
+// current by the time its own GET goes out. All of them use fakeClient's
+// block hook, the same gating mechanism the "state transitions" tests above
+// already use, to make the interleaving deterministic instead of relying on
+// real wall-clock timing.
+
+// TestBackDuringInFlightFetchIsNotOverwrittenByStaleFetch reproduces the
+// bug's steps 1-3: a Fetch is started (mirroring activateDocumentSelection's
+// sessionCmd), the user's Back runs synchronously while it is still in
+// flight (mirroring handleBack, which is deliberately not wrapped in a
+// cmd), and only then does the abandoned Fetch's response land. Before the
+// generation guard, fetch()'s completion code appended a frame onto
+// whatever n.stack was at that moment -- the post-Back stack -- silently
+// undoing the Back. After the guard, the stale response must be discarded.
+func TestBackDuringInFlightFetchIsNotOverwrittenByStaleFetch(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	n.OpenRoot(testBackend())
+	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
+	n.Fetch(target.Href, "shelves") // stack: [root, shelves]
+	if !n.CanGoBack() {
+		t.Fatal("CanGoBack() = false, want true")
+	}
+
+	// A third document the in-flight fetch below will (attempt to) land as
+	// a push on top of "shelves".
+	fake.routes[base+"deep"] = map[string]any{
+		"title": "Deep",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/deep"}},
+	}
+
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	fake.block = func(string) {
+		close(started)
+		<-gate
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.Fetch(base+"deep", "deep")
+	}()
+	<-started // "deep" fetch is in flight, blocked before it returns
+
+	// The user's Back runs synchronously while that fetch is still in
+	// flight -- exactly model.go's handleBack path.
+	n.Back()
+	if got := n.Document(); got == nil || got.Title != "The pantry" {
+		t.Fatalf("Document().Title after Back = %v, want %q", got, "The pantry")
+	}
+	if n.CanGoBack() {
+		t.Fatal("CanGoBack() = true after Back to root, want false")
+	}
+
+	close(gate) // let the stale "deep" fetch finally land
+	<-done
+
+	if got := n.Document(); got == nil || got.Title != "The pantry" {
+		t.Errorf("Document().Title after stale fetch landed = %v, want %q: Back must win, not the abandoned fetch", got, "The pantry")
+	}
+	if n.CanGoBack() {
+		t.Error("CanGoBack() = true, want false: the stale fetch must not resurrect a frame Back already popped")
+	}
+	if n.State() != nav.StateOK {
+		t.Errorf("State() after stale fetch landed = %v, want StateOK", n.State())
+	}
+}
+
+// TestBackDuringInFlightFetchDiscardsStaleFailureToo is the failure-branch
+// sibling of the test above: the fetch that is in flight when Back runs
+// ends in an error (a 404, since its route is never registered), not a
+// success. applyFailureIfCurrent's guard (fetch.go) must discard that
+// failure exactly as fetchAndApply's success-path guard discards a
+// success -- otherwise a Back could still be silently overridden, just
+// with an error screen instead of a resurrected frame.
+func TestBackDuringInFlightFetchDiscardsStaleFailureToo(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	n.OpenRoot(testBackend())
+	target := rowNamed(t, n.Document(), "shelves").Target.(render.FetchTarget)
+	n.Fetch(target.Href, "shelves") // stack: [root, shelves]
+
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	fake.block = func(string) {
+		close(started)
+		<-gate
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.Fetch(base+"nonexistent", "nonexistent") // no such route: 404
+	}()
+	<-started // the failing fetch is in flight, blocked before it returns
+
+	n.Back() // stack: [root]
+	if got := n.Document(); got == nil || got.Title != "The pantry" {
+		t.Fatalf("Document().Title after Back = %v, want %q", got, "The pantry")
+	}
+
+	close(gate) // let the stale, failing fetch finally land
+	<-done
+
+	if n.State() != nav.StateOK {
+		t.Errorf("State() after stale failing fetch landed = %v, want StateOK: the abandoned fetch's failure must not override Back", n.State())
+	}
+	if n.Failure() != nil {
+		t.Errorf("Failure() after stale failing fetch landed = %v, want nil", n.Failure())
+	}
+	if got := n.Document(); got == nil || got.Title != "The pantry" {
+		t.Errorf("Document().Title after stale failing fetch landed = %v, want %q", got, "The pantry")
+	}
+}
+
+// TestAdoptDuringInFlightFetchDiscardsStaleFetch covers Adopt, the third of
+// the four generation-bumping calls the fix touches besides fetch() itself
+// (OpenRoot and Back are covered above; OpenEmbedded is covered below). A
+// fetch started before Adopt switches backends must not land afterwards and
+// push its frame onto the new backend's (empty) stack.
+func TestAdoptDuringInFlightFetchDiscardsStaleFetch(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	n.OpenRoot(testBackend())
+
+	fake.routes[base+"deep"] = map[string]any{
+		"title": "Deep",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/deep"}},
+	}
+
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	fake.block = func(string) {
+		close(started)
+		<-gate
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.Fetch(base+"deep", "deep")
+	}()
+	<-started // "deep" fetch is in flight, blocked before it returns
+
+	other := backend.Backend{Name: "other", BaseURL: "https://other.example/", Secret: "x"}
+	n.Adopt(other)
+	if n.Document() != nil {
+		t.Fatalf("Document() after Adopt = %v, want nil: Adopt starts with an empty stack", n.Document())
+	}
+
+	close(gate) // let the stale "deep" fetch finally land
+	<-done
+
+	if got := n.Backend(); got != other {
+		t.Errorf("Backend() after stale fetch landed = %+v, want %+v", got, other)
+	}
+	if n.Document() != nil {
+		t.Errorf("Document() after stale fetch landed = %v, want nil: the abandoned fetch (for the old backend) must not push onto other's fresh stack", n.Document())
+	}
+	if n.CanGoBack() {
+		t.Error("CanGoBack() = true, want false")
+	}
+}
+
+// TestOpenEmbeddedDuringInFlightFetchDiscardsStaleFetch covers OpenEmbedded,
+// the fourth generation-bumping call: it pushes synchronously (no I/O of
+// its own), but a fetch already in flight when it runs must still not land
+// afterwards and shove its response on top of the frame OpenEmbedded just
+// opened.
+func TestOpenEmbeddedDuringInFlightFetchDiscardsStaleFetch(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	n.OpenRoot(testBackend())
+	embedded := rowNamed(t, n.Document(), "Top shelf").Target.(render.EmbeddedTarget)
+
+	fake.routes[base+"deep"] = map[string]any{
+		"title": "Deep",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/deep"}},
+	}
+
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	fake.block = func(string) {
+		close(started)
+		<-gate
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.Fetch(base+"deep", "deep") // would push onto [root], making [root, deep]
+	}()
+	<-started // "deep" fetch is in flight, blocked before it returns
+
+	n.OpenEmbedded(embedded.Index) // pushes onto the stack as it stands now: [root, "Top shelf"]
+	if got := n.Document(); got == nil || got.Title != "Top shelf" {
+		t.Fatalf("Document().Title after OpenEmbedded = %v, want %q", got, "Top shelf")
+	}
+
+	close(gate) // let the stale "deep" fetch finally land
+	<-done
+
+	if got := n.Document(); got == nil || got.Title != "Top shelf" {
+		t.Errorf("Document().Title after stale fetch landed = %v, want %q: the stale fetch must not overwrite what OpenEmbedded opened", got, "Top shelf")
+	}
+}
+
+// TestFollowStartAfterSupersedingOpenRootUsesOriginalBackend targets the gap
+// the code review for i31 found: followStart's own chained fetch must keep
+// talking to the backend its OpenRoot call was opened for, never whatever
+// backend happens to be n.current by the time followStart's own GET goes
+// out. It proves this two ways: (1) the request is resolved and sent
+// against be's own server (base+"shelves"), never other's, and (2) other's
+// state (already current by the time be's followStart fetch lands) survives
+// untouched. Before followStart threaded OpenRoot's gen through explicitly,
+// a version of this bug (reading n.current fresh inside a generic fetch())
+// could have sent be's StartRel href to other's server instead.
+func TestFollowStartAfterSupersedingOpenRootUsesOriginalBackend(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+	be := testBackend()
+	be.StartRel = "shelves"
+
+	other := backend.Backend{Name: "other", BaseURL: "https://other.example/", Secret: "x"}
+	fake.routes[other.BaseURL] = map[string]any{
+		"title": "Other root",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/"}},
+	}
+
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	fake.block = func(target string) {
+		if target != base+"shelves" {
+			return // only gate followStart's own fetch, not either root
+		}
+		close(started)
+		<-gate
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.OpenRoot(be) // root lands, then followStart's "shelves" fetch blocks
+	}()
+	<-started
+
+	// A second, different backend opens fully while be's followStart fetch
+	// is still in flight.
+	n.OpenRoot(other)
+	if got := n.Backend(); got != other {
+		t.Fatalf("Backend() after second OpenRoot = %+v, want %+v", got, other)
+	}
+
+	close(gate) // let be's stale followStart fetch finally land
+	<-done
+
+	if got := n.Backend(); got != other {
+		t.Errorf("Backend() after stale followStart fetch landed = %+v, want %+v", got, other)
+	}
+	if got := n.Document(); got == nil || got.Title != "Other root" {
+		t.Errorf("Document().Title after stale followStart fetch landed = %v, want %q", got, "Other root")
+	}
+
+	found := false
+	for _, r := range fake.requested {
+		if r == "GET "+other.BaseURL+"shelves" {
+			t.Fatalf("followStart's fetch was requested against other's server (%s): it must always target the backend it was opened for, not whatever is current when its GET goes out", r)
+		}
+		if r == "GET "+base+"shelves" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("requested = %v, want a GET for %s", fake.requested, base+"shelves")
+	}
+}
+
+// TestSecondOpenRootForDifferentBackendWinsOverSlowerFirst reproduces the
+// bug's "worse case": two concurrent OpenRoot calls for two different
+// backends (mirroring openBackendCmd firing for two Home rows before the
+// first lands). Before the generation guard, whichever GET happened to
+// land last won, regardless of which OpenRoot the user actually intended
+// to be looking at last -- a slow first backend's response could land
+// after a second, different backend's OpenRoot had already reset
+// n.current, pushing the first backend's document under the second
+// backend's name. After the guard, the later call always wins.
+func TestSecondOpenRootForDifferentBackendWinsOverSlowerFirst(t *testing.T) {
+	fake := newFakeClient()
+	n := nav.New(fake)
+
+	other := backend.Backend{Name: "other", BaseURL: "https://other.example/", Secret: "x"}
+	fake.routes[other.BaseURL] = map[string]any{
+		"title": "Other root",
+		"links": []any{map[string]any{"rel": []any{"self"}, "href": "/"}},
+	}
+
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	fake.block = func(target string) {
+		if target != base {
+			return // only the first backend's root fetch is gated
+		}
+		close(started)
+		<-gate
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.OpenRoot(testBackend()) // slow: backend "pantry"
+	}()
+	<-started // pantry's GET is in flight, blocked
+
+	n.OpenRoot(other) // "other" opens and lands fully before pantry's GET returns
+
+	if got := n.Backend(); got != other {
+		t.Fatalf("Backend() after second OpenRoot = %+v, want %+v", got, other)
+	}
+	if got := n.Document(); got == nil || got.Title != "Other root" {
+		t.Fatalf("Document().Title after second OpenRoot = %v, want %q", got, "Other root")
+	}
+
+	close(gate) // let pantry's stale GET finally return
+	<-done
+
+	if got := n.Backend(); got != other {
+		t.Errorf("Backend() after stale OpenRoot landed = %+v, want %+v: the abandoned OpenRoot for pantry must not resurrect it as current", got, other)
+	}
+	if got := n.Document(); got == nil || got.Title != "Other root" {
+		t.Errorf("Document().Title after stale OpenRoot landed = %v, want %q: pantry's late response must not overwrite other's document", got, "Other root")
+	}
+	if n.State() != nav.StateOK {
+		t.Errorf("State() after stale OpenRoot landed = %v, want StateOK", n.State())
+	}
+}
+
 // --- small helpers -------------------------------------------------------
 
 func labelsOf(doc *render.RenderedDocument) []string {

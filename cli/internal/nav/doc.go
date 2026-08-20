@@ -57,6 +57,39 @@
 // the state after -- never a torn read, and rendering is never blocked for
 // the duration of a fetch.
 //
+// # Stale fetches must not win
+//
+// The same "HTTP call runs with the lock released" design that keeps
+// rendering unblocked opens a second, easy-to-miss problem: nothing stops a
+// *second* mutating call -- a Back, a second Fetch, an OpenRoot for a
+// different backend -- from running to completion while the first one's GET
+// is still in flight. Without a guard, the first call's response lands
+// later and unconditionally appends/replaces a frame on n.stack as it
+// stands at that moment, silently undoing whatever the second, more recent
+// call did (see internal/tui/cmd.go's package comment for why two such
+// calls can genuinely overlap in this app, not just in theory). Every
+// mutating method here bumps Nav.generation as the first thing it does
+// under the lock; fetch() and OpenRoot capture the value that bump produced
+// before releasing the lock for their own HTTP call, and check it again
+// before applying that call's result -- discarding it if some other call
+// has bumped generation in the meantime. Mirrors internal/live's
+// isCurrent/stopIfCurrent/scheduleIfCurrent pattern (see live/poll.go),
+// adapted to a counter since Nav, unlike Live, has no single per-call
+// object to compare pointer identity against.
+//
+// OpenRoot's own chained fetch -- followStart, when be.StartRel is
+// configured -- is not just "another fetch() call": it threads OpenRoot's
+// gen through explicitly (fetch.go, followStart) and re-checks it before
+// even starting its own GET, rather than letting a generic fetch() read
+// n.current fresh. Reading n.current there would be wrong for a more
+// subtle reason than staleness alone -- if a second OpenRoot for a
+// different backend has already run by the time followStart's own GET
+// would start, n.current no longer names the backend be.StartRel's href
+// belongs to, and sending that href to whatever backend happens to be
+// current now would resolve a relative URL against the wrong BaseURL and
+// send the wrong backend's auth secret. followStart's own doc comment
+// covers this in full.
+//
 // # What this package does not own
 //
 // Left to their own packages exactly as nav_service.dart's own module
