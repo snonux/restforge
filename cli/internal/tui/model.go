@@ -115,8 +115,31 @@ func (m Model) Init() tea.Cmd {
 
 // Update is Bubble Tea's single-threaded event loop entry point -- see the
 // package-level async-pattern doc comment on sessionCmd for what runs here
-// and what must instead run inside a returned tea.Cmd.
+// and what must instead run inside a returned tea.Cmd. The actual per-message
+// handling is split across two sub-dispatchers purely to keep each function
+// under the package's ~30-line guideline -- updateInputMsg for the
+// input/tick cluster (resize, keys, ticks, session-mutation completion,
+// filter matches) and updateConfigMsg for the home/quick/settings
+// config-load cluster (results of loading or mutating config-backed state).
+// The message-to-behavior mapping is unchanged from before the split; only
+// the switch was moved.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg.(type) {
+	case tea.WindowSizeMsg, tea.KeyMsg, liveTickMsg, spinner.TickMsg, sessionUpdatedMsg, list.FilterMatchesMsg:
+		return m.updateInputMsg(msg)
+	case homeLoadedMsg, homeOpenedMsg, homeQuickRanMsg, settingsSavedMsg, homeQuickDeletedMsg, documentQuickSavedMsg:
+		return m.updateConfigMsg(msg)
+	}
+	return m, nil
+}
+
+// updateInputMsg handles the input/tick message cluster dispatched from
+// Update above: terminal resize, key presses, the live and spinner tick
+// loops, a finished Session mutation, and list.Model filter results. These
+// are the messages that drive the shell's own render loop rather than
+// reacting to a config-backed load or save completing (see updateConfigMsg
+// for those).
+func (m Model) updateInputMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return m.applyWindowSize(msg), nil
@@ -148,6 +171,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// cached copy" contract internal/session's own package comment
 		// describes for a caller of its methods.
 		return m.resyncDocumentScreen(), m.startSpinnerCmd()
+	case list.FilterMatchesMsg:
+		// list.Model's own filterItems debounces recomputing the match set
+		// away from every keystroke: typing a query returns a tea.Cmd that
+		// lands back here, at this package's own Update, some tens of
+		// milliseconds later -- not synchronously inside list.Model's own
+		// Update call the way a first glance at vikeys.go's filter handling
+		// might suggest. Without this case the message has nowhere to go
+		// (Bubble Tea does not know it belongs to a nested list.Model), so
+		// list.Model.filteredItems is never actually updated and every
+		// screen's own filter looks like it does nothing -- see
+		// applyFilterMatches's own doc comment for where it is routed.
+		return m.applyFilterMatches(msg)
+	}
+	return m, nil
+}
+
+// updateConfigMsg handles the home/quick/settings config-load message
+// cluster dispatched from Update above: the results of loading or mutating
+// config-backed state -- the initial backends/shortcuts load, a backend
+// having been opened, a saved shortcut having run, and settings/quick saves
+// or deletes completing. These all originate from internal/config or
+// internal/quick, directly or via Session, rather than from the terminal or
+// a tick loop (see updateInputMsg for those).
+func (m Model) updateConfigMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
 	case homeLoadedMsg:
 		m.home = m.home.applyLoaded(msg)
 		return m, nil
@@ -168,18 +216,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyQuickDeleted(msg)
 	case documentQuickSavedMsg:
 		return m.applyQuickSaved(msg)
-	case list.FilterMatchesMsg:
-		// list.Model's own filterItems debounces recomputing the match set
-		// away from every keystroke: typing a query returns a tea.Cmd that
-		// lands back here, at this package's own Update, some tens of
-		// milliseconds later -- not synchronously inside list.Model's own
-		// Update call the way a first glance at vikeys.go's filter handling
-		// might suggest. Without this case the message has nowhere to go
-		// (Bubble Tea does not know it belongs to a nested list.Model), so
-		// list.Model.filteredItems is never actually updated and every
-		// screen's own filter looks like it does nothing -- see
-		// applyFilterMatches's own doc comment for where it is routed.
-		return m.applyFilterMatches(msg)
 	}
 	return m, nil
 }
