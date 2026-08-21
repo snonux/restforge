@@ -23,8 +23,13 @@ func (l *Live) poll() {
 
 	// The HTTP round trip happens with the lock released -- Start/Stop must
 	// stay usable from another goroutine for the whole time this is in
-	// flight.
-	resp, err := l.http.Get(current.backend, current.href)
+	// flight. current.ctx is this watch's own cancellable context (q31):
+	// cancelled by Stop or a superseding Start (see Live.cancel), which is
+	// what lets this GET actually be aborted rather than merely have its
+	// answer discarded once it lands -- the isCurrent check right below,
+	// which still exists as a backstop for a round trip already past the
+	// point of cancelling.
+	resp, err := l.http.GetContext(current.ctx, current.backend, current.href)
 	if !l.isCurrent(current) {
 		// A watch that was stopped -- or replaced by a new one -- while the
 		// request was in flight must not resurrect itself.

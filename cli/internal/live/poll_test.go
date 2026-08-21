@@ -1,7 +1,9 @@
 package live_test
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/snonux/restforge/cli/internal/live"
 )
@@ -189,3 +191,64 @@ func TestAStoppedWatchNeverPollsAgain(t *testing.T) {
 		t.Error("IsLive() = true, want false: and reports itself stopped")
 	}
 }
+
+// --- q31: Stop/Start actually cancel an in-flight poll's context, not just
+// discard its answer --------------------------------------------------
+
+// TestStopCancelsInFlightPollContext proves Stop (via clearLocked) cancels
+// a poll's in-flight context, not just IsLive/current -- the counterpart of
+// nav_test.go's TestBackCancelsInFlightFetchContext for this package.
+//
+// fakeClock.tick fires a due timer's callback (poll) synchronously and
+// returns only once poll has finished (see this file's own env/fakeClock
+// header comment in live_test.go), so proving cancellation needs the poll's
+// own GET blocked on a separate goroutine while the main goroutine calls
+// Stop -- the same shape nav's cancellation tests use for the same reason.
+func TestStopCancelsInFlightPollContext(t *testing.T) {
+	e := newEnv()
+	e.begin(map[string]any{"state": "running", "id": float64(4), "staleAfterSeconds": float64(120)})
+
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	e.getter.block = func(ctx context.Context, _ string) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			close(cancelled)
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.clock.tick(live.PollInterval) // fires poll, blocks in fakeGetter
+	}()
+	<-started // the poll's GET is in flight, blocked on its own ctx
+
+	e.live.Stop() // must cancel the poll's ctx, not just clear current
+
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not cancel the in-flight poll's context: the round trip is left running to its own timeout instead of being aborted")
+	}
+	<-done
+}
+
+// A superseding Start() is not tested separately from Stop() above: Start's
+// own doc comment says it begins with an unconditional l.Stop() call, and
+// live.go has no second code path into clearLocked for that case (unlike
+// nav, where Back's own supersedeLocked call and OpenRoot/followStart's via
+// beginFetchLocked are two genuinely different call sites worth pinning
+// separately) -- so TestStopCancelsInFlightPollContext already exercises
+// the only mechanism a superseding Start relies on. An earlier version of
+// this file also called Start() from the main goroutine while the first
+// watch's poll was still blocked in the background tick() goroutine above,
+// to prove the same thing through Start instead of Stop; that test was
+// removed because Start's own l.now()/l.createTimer() calls touch the same
+// unsynchronized fakeClock (see live_test.go's own header comment: it
+// assumes a timer callback always finishes before the goroutine that fired
+// it regains control) that the background goroutine's tick() was still
+// using to unwind that callback -- a real data race in this test double,
+// not in live.go's production code, caught by -race.

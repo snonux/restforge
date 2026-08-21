@@ -1,6 +1,7 @@
 package live
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -91,15 +92,40 @@ type watch struct {
 
 	startedAt time.Time
 	handlers  Handlers
+
+	// ctx is this watch's own cancellable context, for the callback-based
+	// poll (poll.go's poll) to pass into httpGetter.GetContext. Set once by
+	// Start (paired 1:1 with the context.CancelFunc Live.cancel stores) and
+	// never reassigned -- immutable per-watch data, same as href/backend/id
+	// above, safe to read from the goroutine driving a poll for this watch
+	// without a lock. Cancelled from a caller's goroutine, through
+	// Live.cancel, by Stop or a superseding Start -- see clearLocked.
+	//
+	// nil for a watch WaitForLive builds: that blocking API is not
+	// registered against Live.current (see WaitForLive's own doc comment
+	// on why a concurrent Stop cannot reach it), so there is nothing for a
+	// per-watch context to be cancelled by; blockPoll passes
+	// context.Background() straight to GetContext instead of reading this
+	// field. Never dereferenced on that path -- see blockPoll.
+	ctx context.Context
 }
 
 // httpGetter is the minimal seam Live needs against httpclient.Client --
-// just Get, the only method poll.go calls. *httpclient.Client already
-// satisfies this structurally, so production code passes one straight to
-// New with no adapter; a test substitutes a fake, the same pattern
-// internal/nav uses for its own httpGetter seam.
+// just GetContext, the only method this package calls (poll.go's poll and
+// waitforlive.go's blockPoll). *httpclient.Client already satisfies this
+// structurally, so production code passes one straight to New with no
+// adapter; a test substitutes a fake, the same pattern internal/nav uses
+// for its own httpGetter seam.
+//
+// Takes a context (q31, following n31's httpclient/nav precedent): Start's
+// watch carries its own cancellable context (see watch.ctx and Live.cancel
+// below), cancelled by Stop or a superseding Start, so a poll's in-flight
+// GET is actually aborted when the watch it belongs to ends -- not left
+// running to its own httpclient.GetTimeout for nothing, the way it was
+// before q31 (Stop only stopped scheduling the *next* poll; an already
+// in-flight one kept going untouched).
 type httpGetter interface {
-	Get(be backend.Backend, href string) (httpclient.HTTPResponse, error)
+	GetContext(ctx context.Context, be backend.Backend, href string) (httpclient.HTTPResponse, error)
 }
 
 // Timer is the seam Live needs against a scheduled, cancellable one-shot
@@ -130,12 +156,26 @@ type Live struct {
 	createTimer func(d time.Duration, callback func()) Timer
 	log         func(message string)
 
-	// mu guards timer and current -- the only two fields touched from a
+	// mu guards timer, current and cancel -- the fields touched from a
 	// caller's goroutine (Start, Stop, IsLive) as well as from a poll
 	// goroutine (poll.go). See the package comment's Concurrency section.
 	mu      sync.Mutex
 	timer   Timer
 	current *watch
+
+	// cancel, when non-nil, cancels current's own context (current.ctx) --
+	// the context the poll now in flight for current, if any, was issued
+	// under. Set by Start alongside current and cleared by clearLocked,
+	// mirroring nav.Nav.cancel: bumping/replacing current alone (what this
+	// package already did before q31) only makes a stale poll's answer get
+	// discarded once it lands (see isCurrent/stopIfCurrent in poll.go);
+	// calling this is what actually aborts that poll's HTTP round trip
+	// instead of leaving it running for up to httpclient.GetTimeout for
+	// nothing. Calling an already-fired or nil cancel func is a safe no-op
+	// (context.CancelFunc's contract), so clearLocked can call it
+	// unconditionally whenever it is set, whether or not a poll happened to
+	// be in flight at the time.
+	cancel context.CancelFunc
 }
 
 // Option configures a Live built by New.
@@ -203,6 +243,12 @@ func (l *Live) Start(be backend.Backend, origin Origin, result ActionOutcome, ha
 		return false
 	}
 
+	// ctx is this watch's own cancellable context (see watch.ctx and
+	// Live.cancel) -- rooted at context.Background() rather than derived
+	// from anything a caller passed in, since Start's own signature has no
+	// context parameter to derive from (mirrors nav.beginFetchLocked doing
+	// the same for the same reason).
+	ctx, cancel := context.WithCancel(context.Background())
 	w := &watch{
 		backend:   be,
 		href:      href,
@@ -210,11 +256,13 @@ func (l *Live) Start(be backend.Backend, origin Origin, result ActionOutcome, ha
 		budget:    budgetFor(result.Entity),
 		startedAt: l.now(),
 		handlers:  handlers,
+		ctx:       ctx,
 	}
 	l.logStart(href, w)
 
 	l.mu.Lock()
 	l.current = w
+	l.cancel = cancel
 	l.timer = l.createTimer(PollInterval, l.poll)
 	l.mu.Unlock()
 	return true
@@ -244,12 +292,23 @@ func (l *Live) Stop() {
 	l.clearLocked()
 }
 
-// clearLocked cancels the pending timer, if any, and clears the current
-// watch. l.mu must be held by the caller.
+// clearLocked cancels the pending timer and the current watch's context, if
+// either is set, and clears the current watch. l.mu must be held by the
+// caller.
+//
+// Cancelling l.cancel here -- not just nilling l.current -- is what makes
+// Stop (and Start's own call into this via the superseding path) actually
+// abort a poll already in flight for the watch being cleared, rather than
+// only ensuring its answer gets discarded once it lands (isCurrent/
+// stopIfCurrent in poll.go already did that before q31) -- see Live.cancel.
 func (l *Live) clearLocked() {
 	if l.timer != nil {
 		l.timer.Stop()
 		l.timer = nil
+	}
+	if l.cancel != nil {
+		l.cancel()
+		l.cancel = nil
 	}
 	l.current = nil
 }

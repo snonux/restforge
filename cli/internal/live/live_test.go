@@ -26,6 +26,7 @@
 package live_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -159,11 +160,21 @@ type fakeGetter struct {
 	replyBody   map[string]any
 	replyStatus int
 	fail        bool
+
+	// block, when set, is called with the request's ctx and the resolved
+	// target as GetContext is entered, before replyBody/fail is consulted --
+	// the hook the q31 cancellation tests use to hold a poll in flight and
+	// assert on ctx.Done(), the same pattern nav_test.go's fakeClient.block
+	// uses for nav's own cancellation tests.
+	block func(ctx context.Context, target string)
 }
 
-func (f *fakeGetter) Get(be backend.Backend, href string) (httpclient.HTTPResponse, error) {
+func (f *fakeGetter) GetContext(ctx context.Context, be backend.Backend, href string) (httpclient.HTTPResponse, error) {
 	target := urlresolve.Resolve(href, be.BaseURL)
 	f.polls = append(f.polls, target)
+	if f.block != nil {
+		f.block(ctx, target)
+	}
 	if f.fail {
 		return httpclient.HTTPResponse{}, &failure.Failure{Kind: failure.Unreachable, Message: "connection refused"}
 	}

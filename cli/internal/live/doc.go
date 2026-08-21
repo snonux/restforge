@@ -54,6 +54,15 @@
 // it too, so a handler is free to call Stop on the very *Live that invoked
 // it without deadlocking.
 //
+// Since q31, that "still current" check is a backstop, not the only guard:
+// each watch also carries its own cancellable context (see watch.ctx and
+// Live.cancel in live.go), cancelled by Stop and by a superseding Start, so
+// a poll's in-flight GET is actually aborted when the watch it belongs to
+// ends, rather than merely having its eventual answer discarded -- the
+// generation-cancellation pattern cli/internal/nav's own httpGetter uses,
+// applied here against *watch identity instead of a counter, since Live
+// already had exactly one watch "current" at a time to key off of.
+//
 // # A note for whoever wires this into a Bubble Tea program
 //
 // Handlers.OnProgress, OnDone and OnGiveUp are invoked synchronously, from

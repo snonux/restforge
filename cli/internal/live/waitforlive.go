@@ -1,6 +1,7 @@
 package live
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -97,7 +98,16 @@ func (l *Live) WaitForLive(be backend.Backend, origin Origin, result ActionOutco
 // package's own comments used to warn about.
 func (l *Live) blockPoll(be backend.Backend, w *watch, onProgress func(siren.Entity)) (siren.Entity, bool, error) {
 	for {
-		resp, err := l.http.Get(be, w.href)
+		// context.Background(), not w.ctx (which is nil here -- see watch.ctx's
+		// doc comment): this blocking loop is not registered against
+		// Live.current, so nothing else could ever cancel a per-watch context
+		// even if one existed -- see WaitForLive's own doc comment on why a
+		// concurrent Stop cannot reach a blocking watch. Threading GetContext
+		// through here (q31) is still worth doing over calling Get directly:
+		// it keeps httpGetter to one method (see the interface's own doc
+		// comment) rather than requiring implementers to satisfy two
+		// equivalent seams for the same underlying call.
+		resp, err := l.http.GetContext(context.Background(), be, w.href)
 		if err != nil {
 			// A failed poll is not news about the job -- see the package
 			// comment. Keep asking until the deadline. No budget is
