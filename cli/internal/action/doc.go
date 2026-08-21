@@ -63,4 +63,42 @@
 // internal/backend and internal/failure -- it never imports internal/nav or
 // internal/render, mirroring action_service.dart taking a Backend and an
 // Entity from its caller rather than holding a reference to NavService.
+//
+// # Concurrent callers (r31)
+//
+// action_service.dart has exactly one caller at a time by construction --
+// Flutter's widget tree calls into it on its own single UI isolate. This Go
+// port's caller (internal/tui, via internal/session) has no equivalent
+// guarantee: internal/tui/cmd.go's sessionCmd runs every Session method
+// that does I/O (Activate, Answer, AnswerValue) on its own goroutine that
+// bubbletea does not wait for, and nothing gates a second keypress from
+// dispatching another one before the first has returned -- Confirm's own
+// 'n' binding and the shell's global Back key go further still, calling
+// Session.Answer(false)/Back directly and synchronously on Update's own
+// goroutine (see confirm_update.go and model.go's handleBack), so a
+// sessionCmd goroutine and Update's own can both be inside this same
+// *Action at once, not only two sessionCmd goroutines racing each other.
+//
+// Two overlapping calls into the same *Action are therefore not
+// theoretical: a double press of Confirm's 'y' binding before the first
+// press's HTTP round trip returns, or a 'y' press racing the Back key's
+// direct Answer(false), each spawn or run a call into Answer/AnswerValue/
+// Ask concurrently with another. Action.pending and Action.confirmedRetry
+// guard against this with a sync.Mutex (Action.mu) plus two small
+// primitives building on it: takePendingIf atomically claims and clears
+// a.pending (so two overlapping Answer/AnswerValue calls cannot both see
+// the same question and both send it -- only the first to the lock wins;
+// the second gets the same nil these methods already returned for "nothing
+// to do"), and casPending compare-and-swaps a.pending by pointer identity
+// before writing the "now awaiting a value" pendingAction FieldValueMissing
+// produces, discarding that write if a concurrent CancelPending or a fresh
+// Ask has already moved a.pending on to something else in the meantime --
+// mirrors live.Live's isCurrent/stopIfCurrent pointer-identity check
+// (internal/live/poll.go) rather than nav.Nav's generation counter, since
+// pendingAction is itself Action's one per-call object to compare against,
+// the same reason live needs no counter of its own either. See
+// takePendingIf's and casPending's own doc comments (action.go) for the
+// concrete race each closes, and internal/action/race_test.go for the
+// -race-provable regression tests: reverting either primitive and
+// rerunning that file with -race reliably reports a race.
 package action

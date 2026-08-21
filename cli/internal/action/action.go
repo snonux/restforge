@@ -1,6 +1,7 @@
 package action
 
 import (
+	"sync"
 	"time"
 
 	"github.com/snonux/restforge/cli/internal/backend"
@@ -90,11 +91,29 @@ type Action struct {
 	// either side of confirmationRetryTTL without a real minute passing.
 	now func() time.Time
 
+	// mu guards pending and confirmedRetry below -- see r31 and the package
+	// comment's "Concurrent callers" section for why this exists: a Bubble
+	// Tea caller can have more than one goroutine calling into this same
+	// *Action at once (two sessionCmd goroutines from a double keypress, or
+	// a sessionCmd goroutine racing the Back key's direct, synchronous
+	// call -- internal/tui/cmd.go's package comment and model.go's
+	// handleBack), and without a lock that is a genuine data race on these
+	// two fields, not just a theoretical one.
+	mu sync.Mutex
+
+	// pending is the action awaiting confirmation or a spoken value, or nil
+	// when nothing is. Claimed atomically (takePendingIf) by Answer/
+	// AnswerValue and compare-and-swapped (casPending) by invoke's own
+	// FieldValueMissing branch -- see both methods' doc comments -- rather
+	// than read and written directly, so two overlapping calls can never
+	// both see the same question and both act on it.
 	pending *pendingAction
 
 	// confirmedRetry is the confirmation the user gave, kept just long
 	// enough to answer a server that comes back 409 after it -- see
-	// confirmedRetry and Action.retryable.
+	// confirmedRetry and Action.retryable. Always read and written with mu
+	// held; never touched while a.http.Request itself is in flight (send
+	// sets it before, afterSend reads/clears it after -- see both).
 	confirmedRetry *confirmedRetry
 
 	// userValues is the caller-supplied field map the one-shot CLI passes
@@ -158,15 +177,77 @@ func New(client requester, opts ...Option) *Action {
 // to know this before it re-fetches out from under a question nobody has
 // answered yet, the same reason nav.js's idle refresh consults it there.
 func (a *Action) HasPending() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.pending != nil
 }
 
 // CancelPending abandons whatever question is pending, without sending
 // anything. Mirrors cancelPending() in actions.js -- called when the
 // screen an action was offered on is left before it is answered, so the
-// question does not outlive the document it was about.
+// question does not outlive the document it was about. May race a
+// concurrent Answer/AnswerValue/invoke -- see r31 -- so this only ever
+// nils a.pending under the lock rather than touching anything an in-flight
+// call has already captured into its own local variables.
 func (a *Action) CancelPending() {
+	a.mu.Lock()
 	a.pending = nil
+	a.mu.Unlock()
+}
+
+// casPending swaps a.pending from old to new, but only if a.pending is
+// still old when the lock is taken -- discards new otherwise. Mirrors
+// live.Live's isCurrent/stopIfCurrent pointer-identity check (poll.go),
+// used here instead of nav.Nav's generation counter because pendingAction
+// is itself Action's one per-call object to compare against, the same
+// reason live compares *watch directly rather than keeping a counter of
+// its own (see nav's package comment for why nav needs a counter where
+// live does not).
+//
+// Needed because invoke's own FillFields decision (pure computation, no
+// I/O) still straddles a window a concurrent call can land in: the Back
+// key's CancelPending (handleBack, called directly on Update's own
+// goroutine, never through sessionCmd) or a fresh Ask for a different
+// action (a second Activate dispatched while this call's own sessionCmd
+// goroutine has not returned yet) can each move a.pending on to something
+// else -- nil, or a different question -- while this call is still
+// deciding what its own outcome is. Writing that outcome over either would
+// resurrect a question the user already cancelled, or clobber a different
+// action's freshly-asked one; casPending's old check makes that a
+// silent no-op instead, the same "stale, discard" contract nav's
+// generation check and live's isCurrent enforce.
+func (a *Action) casPending(old, new *pendingAction) {
+	a.mu.Lock()
+	if a.pending == old {
+		a.pending = new
+	}
+	a.mu.Unlock()
+}
+
+// takePendingIf atomically claims the current pending action and clears
+// it, but only when pred(a.pending) is true -- Answer accepts any pending
+// action, AnswerValue only one already awaiting a spoken value
+// (pendingAction.awaitingField != ""), matching the checks Answer/
+// AnswerValue made directly against a.pending before r31.
+//
+// Atomic so two overlapping calls -- e.g. two rapid presses of Confirm's
+// 'y' binding, each its own sessionCmd goroutine (internal/tui/cmd.go)
+// dispatched before the first one's outcome has changed Session.Question()
+// enough for the screen to move on -- cannot both see the same
+// pendingAction and both send it: only the first to take the lock claims
+// it here; the second finds pending already nil (or failing pred) and
+// reports "nothing to do", exactly the existing single-threaded contract
+// Answer/AnswerValue already promised their own callers, now actually true
+// under concurrency too.
+func (a *Action) takePendingIf(pred func(*pendingAction) bool) *pendingAction {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pending == nil || !pred(a.pending) {
+		return nil
+	}
+	p := a.pending
+	a.pending = nil
+	return p
 }
 
 // retryable answers the narrow question the contract permits: did the
@@ -175,7 +256,9 @@ func (a *Action) CancelPending() {
 // a confirmation for a different action, or one old enough to have
 // expired -- is a no. Mirrors retryable() in actions.js.
 func (a *Action) retryable(name string) bool {
+	a.mu.Lock()
 	retry := a.confirmedRetry
+	a.mu.Unlock()
 	if retry == nil || retry.name != name {
 		return false
 	}

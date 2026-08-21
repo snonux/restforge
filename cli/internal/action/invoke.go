@@ -94,16 +94,23 @@ func (InvokeFailed) isInvokeOutcome() {}
 // rather than trusting whatever siren.Action was found when Ask was
 // called -- mirrors invoke() re-reading nav.top().entity in actions.js,
 // in case the document moved on while the question was still on screen.
+//
+// Claims a.pending via takePendingIf (r31) rather than checking then
+// clearing it as two separate steps: two overlapping calls -- a double
+// press of Confirm's 'y' binding, or a 'y' racing the Back key's direct,
+// synchronous Answer(false) call (internal/tui/cmd.go's package comment
+// and model.go's handleBack) -- must not both see the same pendingAction
+// non-nil and both go on to send it.
 func (a *Action) Answer(confirmed bool, be backend.Backend, entity siren.Entity) InvokeOutcome {
-	if a.pending == nil {
+	p := a.takePendingIf(func(*pendingAction) bool { return true })
+	if p == nil {
 		return nil
 	}
 	if !confirmed {
-		a.log(fmt.Sprintf("declined %q", a.pending.name))
-		a.pending = nil
+		a.log(fmt.Sprintf("declined %q", p.name))
 		return nil
 	}
-	return a.invoke(be, entity, true, nil)
+	return a.invoke(be, entity, true, nil, p)
 }
 
 // AnswerValue handles the reply to the "say a value" prompt InvokeNeedsValue
@@ -116,42 +123,63 @@ func (a *Action) Answer(confirmed bool, be backend.Backend, entity siren.Entity)
 // was answered or cancelled already, or Ask/Answer never raised
 // InvokeNeedsValue in the first place -- the same "nothing to do" contract
 // Answer uses.
+//
+// Claims a.pending via takePendingIf the same way Answer does (r31),
+// restricted to a pendingAction actually awaiting a value
+// (awaitingField != "") -- a pending ConfirmQuestion (awaitingField == "")
+// is left untouched here, exactly as the direct field checks this replaced
+// did, since it belongs to Answer instead.
 func (a *Action) AnswerValue(text string, be backend.Backend, entity siren.Entity) InvokeOutcome {
-	if a.pending == nil || a.pending.awaitingField == "" {
+	p := a.takePendingIf(func(p *pendingAction) bool { return p.awaitingField != "" })
+	if p == nil {
 		return nil
 	}
 	if text == "" {
-		a.pending = nil
 		return InvokeRefused{Reason: "Nothing was heard, so nothing was sent."}
 	}
-	spoken := &FieldAnswer{Name: a.pending.awaitingField, Text: text}
-	return a.invoke(be, entity, true, spoken)
+	spoken := &FieldAnswer{Name: p.awaitingField, Text: text}
+	return a.invoke(be, entity, true, spoken, p)
 }
 
 // invoke sends the pending action, if it is still offered on entity and
 // every required field can be filled. Shared by the safe-method branch of
 // Ask, by Answer and by AnswerValue -- mirrors invoke() in actions.js.
-func (a *Action) invoke(be backend.Backend, entity siren.Entity, confirmed bool, spoken *FieldAnswer) InvokeOutcome {
-	name := a.pending.name
+//
+// p is the pendingAction the caller already has in hand: Ask's own fresh
+// one (never published to a.pending for a safe method -- see Ask's doc
+// comment), or whatever Answer/AnswerValue's takePendingIf just claimed
+// and cleared from a.pending. Either way, a.pending is nil by the time
+// this runs (r31) -- invoke reads p directly rather than a.pending, so a
+// concurrent CancelPending or a fresh Ask racing in here cannot hand this
+// call a torn or superseded pendingAction out from under it; the only
+// write this method itself makes back to a.pending (FieldValueMissing,
+// below) goes through casPending's old-still-current check for the same
+// reason.
+func (a *Action) invoke(be backend.Backend, entity siren.Entity, confirmed bool, spoken *FieldAnswer, p *pendingAction) InvokeOutcome {
+	name := p.name
 	act := entity.ActionByName(name)
 	if act == nil {
-		a.pending = nil
 		return InvokeRefused{Reason: "not offered"}
 	}
 
 	switch filled := FillFields(*act, confirmed, spoken, a.userValues).(type) {
 	case FieldsRefused:
-		a.pending = nil
 		return InvokeRefused{Reason: filled.Reason}
 	case FieldValueMissing:
 		// Keep the question pending -- now awaiting a value for this
 		// field rather than a yes/no -- instead of clearing it as every
 		// other branch does; see the package comment and AnswerValue.
-		awaiting := a.pending.awaiting(filled.Field.Name)
-		a.pending = &awaiting
+		// casPending(nil, ...) rather than a bare a.pending = &awaiting:
+		// a.pending is expected still nil here (nobody has published
+		// anything since p was claimed above), and if a concurrent
+		// CancelPending or a fresh Ask has already moved it on to
+		// something else, this call's own answer is stale and must not
+		// overwrite that -- see casPending's own doc comment.
+		awaiting := p.awaiting(filled.Field.Name)
+		a.casPending(nil, &awaiting)
 		return InvokeNeedsValue{FieldName: filled.Field.Name, Label: filled.Field.Label()}
 	case FieldsFilled:
-		return a.send(be, *act, confirmed, filled.Values, name)
+		return a.send(be, *act, confirmed, filled.Values, name, p.href, p.method)
 	default:
 		panic(fmt.Sprintf("action: unreachable FieldFillOutcome type %T", filled))
 	}
@@ -159,11 +187,10 @@ func (a *Action) invoke(be backend.Backend, entity siren.Entity, confirmed bool,
 
 // send sends the request, remembering the confirmation for the one retry
 // the contract allows first if it applies. Mirrors invokeSend() in
-// actions.js.
-func (a *Action) send(be backend.Backend, act siren.Action, confirmed bool, values map[string]string, name string) InvokeOutcome {
-	href := a.pending.href
-	method := a.pending.method
-	a.pending = nil
+// actions.js. href and method come from the caller's own already-claimed
+// pendingAction (invoke's p) rather than a.pending -- see invoke's own doc
+// comment for why nothing here reads that field directly any more.
+func (a *Action) send(be backend.Backend, act siren.Action, confirmed bool, values map[string]string, name, href, method string) InvokeOutcome {
 	a.log(fmt.Sprintf("invoking %q (%s)", name, method))
 
 	if confirmed && hasRequiredCheckbox(act) {
@@ -171,8 +198,16 @@ func (a *Action) send(be backend.Backend, act siren.Action, confirmed bool, valu
 		// confirmedRetry and Action.retryable. Unconditionally overwrites
 		// whatever was remembered before, mirroring confirmedAt = ... in
 		// actions.js: a fresh confirmation replaces a stale one rather
-		// than accumulating alongside it.
+		// than accumulating alongside it. Guarded by a.mu (r31): send and
+		// afterSend can, in principle, run concurrently for two different
+		// actions (each with its own locally-captured href/method/values,
+		// so neither's request is corrupted by the other), and both write
+		// this same field -- last-writer-wins is the intended behaviour
+		// here (mirrors the single-threaded overwrite above), the lock
+		// only makes that overwrite itself race-free rather than torn.
+		a.mu.Lock()
 		a.confirmedRetry = &confirmedRetry{name: name, href: href, method: method, values: values, at: a.now()}
+		a.mu.Unlock()
 	}
 	return a.doSend(be, href, method, values, name)
 }
@@ -198,8 +233,12 @@ func (a *Action) afterSend(be backend.Backend, href, method string, values map[s
 	if err == nil {
 		// The confirmation was spent, successfully -- see
 		// afterActionSuccess in actions.js clearing confirmedAt the same
-		// way.
+		// way. Locked (r31): see send's own doc comment on why this field
+		// needs a.mu even though only one goroutine ever "owns" a given
+		// confirmation at a time.
+		a.mu.Lock()
 		a.confirmedRetry = nil
+		a.mu.Unlock()
 		return InvokeSucceeded{Response: resp}
 	}
 
@@ -214,7 +253,9 @@ func (a *Action) afterSend(be backend.Backend, href, method string, values map[s
 	// conflict again, or anything else -- is final; retryable(name) will
 	// say no to a second attempt at the same action regardless of how
 	// much of the TTL is left.
+	a.mu.Lock()
 	a.confirmedRetry = nil
+	a.mu.Unlock()
 	a.log("conflict on a confirmed action: re-sending it once")
 	retriedResp, retriedErr := a.http.Request(be, href, method, values)
 	if retriedErr != nil {

@@ -61,6 +61,17 @@ func (ActionInvoked) isAskOutcome() {}
 // Ask looks up name on entity and decides whether it needs confirming.
 // Mirrors askAction() in actions.js / ActionService.ask in
 // action_service.dart.
+//
+// A safe method's pendingAction is never published to a.pending at all
+// (r31): nothing needs to await a confirmation for it -- invoke below is
+// called with it directly, and only invoke's own FieldValueMissing branch
+// ever needs to make it visible as a.pending (via casPending), for a
+// caller to answer with AnswerValue. Leaving it unpublished here also
+// closes the concurrency gap this task found: two Ask calls for the same
+// safe action racing (e.g. a double keypress before the first's HTTP round
+// trip returns -- see internal/tui/cmd.go's package comment) no longer
+// have a window where a.pending briefly names one goroutine's action while
+// a concurrent CancelPending or second Ask can see and clobber it.
 func (a *Action) Ask(be backend.Backend, entity siren.Entity, name string) AskOutcome {
 	act := entity.ActionByName(name)
 	if act == nil {
@@ -71,10 +82,16 @@ func (a *Action) Ask(be backend.Backend, entity siren.Entity, name string) AskOu
 		return ActionNotOffered{Name: name}
 	}
 
-	a.pending = &pendingAction{name: name, href: act.Href, method: act.Method}
+	p := &pendingAction{name: name, href: act.Href, method: act.Method}
 	if IsSafeMethod(act.Method) {
-		return ActionInvoked{Outcome: a.invoke(be, entity, true, nil)}
+		return ActionInvoked{Outcome: a.invoke(be, entity, true, nil, p)}
 	}
+
+	// Unsafe: nothing is sent until Answer/AnswerValue claims this exact
+	// p (takePendingIf) -- see action.go's field comment on pending.
+	a.mu.Lock()
+	a.pending = p
+	a.mu.Unlock()
 	return ConfirmationRequired{
 		Heading: act.Label(),
 		Body:    ConfirmationText(*act),
