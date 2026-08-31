@@ -55,9 +55,8 @@ var _ list.ItemDelegate = settingsDelegate{}
 // title line; see Render.
 func (settingsDelegate) Height() int { return 2 }
 
-// Spacing is one blank line between rows -- same reasoning as
-// homeDelegate.Spacing.
-func (settingsDelegate) Spacing() int { return 1 }
+// Spacing is zero -- same reasoning as homeDelegate.Spacing.
+func (settingsDelegate) Spacing() int { return 0 }
 
 // Update does nothing -- see homeDelegate.Update's own doc comment; the same
 // reasoning applies here.

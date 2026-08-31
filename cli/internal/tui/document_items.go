@@ -42,9 +42,11 @@ var _ list.ItemDelegate = documentDelegate{}
 // one.
 func (documentDelegate) Height() int { return 2 }
 
-// Spacing is one blank line between rows -- same reasoning as
-// homeDelegate.Spacing.
-func (documentDelegate) Spacing() int { return 1 }
+// Spacing is zero -- same reasoning as homeDelegate.Spacing: the title/
+// subtitle pair each row already renders is break enough, and a document can
+// hold far more rows than a backend list, so the extra blank line cost more
+// screen real estate here than anywhere else in this package.
+func (documentDelegate) Spacing() int { return 0 }
 
 // Update does nothing -- see homeDelegate.Update's own doc comment; the
 // same reasoning applies here: a row has no state of its own for a

@@ -50,9 +50,11 @@ var _ list.ItemDelegate = homeDelegate{}
 // current backend and kind).
 func (homeDelegate) Height() int { return 2 }
 
-// Spacing is one blank line between rows, so a list of several backends or
-// shortcuts does not read as a single wall of text.
-func (homeDelegate) Spacing() int { return 1 }
+// Spacing is zero: each row already carries its own title/subtitle pair
+// (Height above), which reads as a big enough visual break between backends
+// or shortcuts on its own -- an extra blank line on top of that just pushed
+// a short list off the screen for no gain.
+func (homeDelegate) Spacing() int { return 0 }
 
 // Update does nothing: neither backendItem nor quickItem has any state of
 // its own for a keypress to change -- selection and activation are both
