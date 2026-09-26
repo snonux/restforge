@@ -1,3 +1,1 @@
-First release in the snonux F-Droid repository, now signed with a dedicated release key.
-
-If you installed RESTForge before from a debug build, uninstall it once first. That removes your saved backends and shortcuts, so note them down beforehand. From now on F-Droid updates the app normally.
+Maintenance release, built and signed by the automated release pipeline and published to the snonux F-Droid repository.
