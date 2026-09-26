@@ -1,1 +1,1 @@
-Maintenance release. Documentation now explains how to install RESTForge from the snonux F-Droid repository.
+New: Export settings and Import settings in the home screen menu. Back up all backends (with their secrets) and shortcuts to one file and restore them after a reinstall. The file holds your secrets in plain text, so keep it safe.
