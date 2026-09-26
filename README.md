@@ -26,7 +26,7 @@ invariant that follows from it.
 | Directory | What it is | Toolchain |
 |---|---|---|
 | [`pebble/`](pebble/) | The Pebble watchapp, for Pebble Time 2 (emery) and Pebble Round 2 (gabbro). Split across watch and phone: the watch renders frames and reports button presses, PebbleKit JS on the phone does everything else. Also on the [Pebble Appstore](https://apps.repebble.com/restforge_931683527605431e96bf2772). | Rebble Pebble SDK 4.9+, `just`, node, python3 |
-| [`flutter/`](flutter/) | The Android app. One device, so no split — but the same rules, the same confirmation policy and the same refusal to know anything about a server. Also runs on Linux desktop for development. | Flutter 3.41+ / Dart 3.11+, `just` |
+| [`flutter/`](flutter/) | The Android app. One device, so no split — but the same rules, the same confirmation policy and the same refusal to know anything about a server. Install it from the [snonux F-Droid repository](https://github.com/snonux/fdroid) ([how](flutter/README.md#install-from-f-droid)). Also runs on Linux desktop for development. | Flutter 3.41+ / Dart 3.11+, `just` |
 | [`cli/`](cli/) | The terminal client: an interactive Bubble Tea TUI and scriptable one-shot subcommands (`restforge get`, `restforge act`) in one binary. Same rules again, ported to Go. | Go 1.26.5+, `just` |
 
 For what each one does and how to use, build, run and check it, read its own
