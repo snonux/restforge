@@ -37,7 +37,7 @@
 /// `shared_preferences`; there is no secure-storage half to this module.
 ///
 /// The decode-tolerate-cap machinery (`load`/`save`/`_normaliseStoredList`/
-/// `_capAndFilter`/`_trim`, and `count`/`get`) — `normalise`/`_usable` stay
+/// `_capAndFilter`/`_trim`, and `count`/`get`) — `normalise`/`isUsable` stay
 /// per-type — is duplicated from `settings_service.dart` on purpose. This is
 /// a Rule-of-Three-not-met case — two stores, not three — and extracting a
 /// `PrefsJsonListStore` helper now would couple two bounded value types
@@ -98,8 +98,9 @@ class QuickItem {
   });
 
   /// The subset persisted to shared_preferences — everything, since none of
-  /// it is a secret (see the module comment).
-  Map<String, dynamic> _toJson() => {
+  /// it is a secret (see the module comment). Public because the settings
+  /// backup (`backup_service.dart`) writes the same shape into its file.
+  Map<String, dynamic> toJson() => {
     'label': label,
     'backendName': backendName,
     'baseUrl': baseUrl,
@@ -130,7 +131,8 @@ class QuickItem {
 }
 
 class QuickService {
-  QuickService({SettingsService? settings}) : _settings = settings ?? SettingsService();
+  QuickService({SettingsService? settings})
+    : _settings = settings ?? SettingsService();
 
   final SettingsService _settings;
 
@@ -143,7 +145,7 @@ class QuickService {
   static const String _storageKey = 'restforge.quick';
 
   /// Coerces one stored or submitted map into the shape above. Does not
-  /// reject anything — [_usable] does that. Storage that has drifted (an
+  /// reject anything — [isUsable] does that. Storage that has drifted (an
   /// older layout, a hand-edited value) degrades to something usable instead
   /// of taking the app down at startup — same reasoning as
   /// [SettingsService.normalise].
@@ -162,8 +164,11 @@ class QuickService {
 
   /// Rejects a shortcut that could not be acted on. An action needs
   /// somewhere to look itself up next time; a document needs an address.
-  /// Mirrors `usable()` in `quick.js`.
-  static bool _usable(QuickItem item) {
+  /// Mirrors `usable()` in `quick.js`. Public for the settings import
+  /// (`backup_service.dart`), which refuses a file holding a shortcut this
+  /// store would silently drop rather than report a restore that did not
+  /// restore everything.
+  static bool isUsable(QuickItem item) {
     if (item.label.isEmpty || item.baseUrl.isEmpty) {
       return false;
     }
@@ -208,7 +213,7 @@ class QuickService {
   }
 
   /// Normalises a decoded JSON array into shortcuts, dropping anything that
-  /// cannot be a shortcut (a junk array member) or is not [_usable], and
+  /// cannot be a shortcut (a junk array member) or is not [isUsable], and
   /// capping at [maxQuick]. Mirrors the loop in `load()`/`save()` in
   /// `quick.js`.
   List<QuickItem> _normaliseStoredList(List<dynamic> parsed) {
@@ -221,7 +226,7 @@ class QuickService {
         continue;
       }
       final item = normalise(Map<String, dynamic>.from(entry));
-      if (_usable(item)) {
+      if (isUsable(item)) {
         out.add(item);
       }
     }
@@ -238,10 +243,18 @@ class QuickService {
     final clean = _capAndFilter(list);
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_storageKey, jsonEncode(clean.map((i) => i._toJson()).toList()));
+      await prefs.setString(
+        _storageKey,
+        jsonEncode(clean.map((i) => i.toJson()).toList()),
+      );
     } catch (error) {
       debugPrint('quick: could not save: $error');
-      return Err(Failure(kind: FailureKind.config, message: 'quick: could not save: $error'));
+      return Err(
+        Failure(
+          kind: FailureKind.config,
+          message: 'quick: could not save: $error',
+        ),
+      );
     }
     return Ok(clean);
   }
@@ -252,8 +265,8 @@ class QuickService {
       if (clean.length >= maxQuick) {
         break;
       }
-      final normalised = normalise(item._toJson());
-      if (_usable(normalised)) {
+      final normalised = normalise(item.toJson());
+      if (isUsable(normalised)) {
         clean.add(normalised);
       }
     }
@@ -273,13 +286,13 @@ class QuickService {
   /// Appends a shortcut, replacing any identical one rather than
   /// accumulating duplicates — saving the same row twice is a natural thing
   /// to do and should be idempotent. Returns null, refusing to save, when
-  /// [item] is incomplete ([_usable]), the list is already at [maxQuick],
+  /// [item] is incomplete ([isUsable]), the list is already at [maxQuick],
   /// or [save] itself failed (a platform write error) — never reports a
   /// shortcut as saved when nothing was persisted. Mirrors `add()` in
   /// `quick.js`.
   Future<QuickItem?> add(QuickItem item) async {
-    final wanted = normalise(item._toJson());
-    if (!_usable(wanted)) {
+    final wanted = normalise(item.toJson());
+    if (!isUsable(wanted)) {
       debugPrint('quick: refusing to save an incomplete shortcut');
       return null;
     }
@@ -344,8 +357,9 @@ class QuickService {
   /// a hot path. Returns null per item when its backend is gone, exactly like
   /// [backendFor]. Pure function of its arguments; the by-base-URL matching
   /// lives here so a screen does not re-implement it.
-  List<Backend?> backendsFor(List<QuickItem> items, List<Backend> backends) =>
-      [for (final item in items) _resolve(item, backends)];
+  List<Backend?> backendsFor(List<QuickItem> items, List<Backend> backends) => [
+    for (final item in items) _resolve(item, backends),
+  ];
 
   /// First backend in [backends] whose [Backend.baseUrl] matches [item]'s —
   /// the by-base-URL matching both [backendFor] and [backendsFor] share, so
@@ -365,6 +379,8 @@ class QuickService {
       return '';
     }
     final text = value.toString().trim();
-    return text.length > maxFieldLength ? text.substring(0, maxFieldLength) : text;
+    return text.length > maxFieldLength
+        ? text.substring(0, maxFieldLength)
+        : text;
   }
 }

@@ -124,6 +124,7 @@ are written per concern. The mapping:
 | Backends and secrets | `settings.js` | `lib/services/settings_service.dart` |
 | Saved shortcuts | `quick.js` | `lib/services/quick_service.dart` |
 | Coordinator | `session.js` | `lib/services/session.dart` |
+| Settings export/import | — | `lib/services/backup_service.dart` (format, checks, replace), `lib/services/backup_files.dart` (the file dialog) |
 
 What does **not** carry over is the watch/phone split and everything that
 served it: AppMessage, frame chunking, the row-index protocol, the four-button

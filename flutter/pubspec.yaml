@@ -24,6 +24,11 @@ dependencies:
   # world-readable XML file the way a plain preference would be.
   flutter_secure_storage: ^9.2.2
 
+  # The platform file dialog for exporting and importing settings
+  # (lib/services/backup_files.dart). On Android it is the Storage Access
+  # Framework, so no storage permission is needed. MIT, AndroidX only.
+  file_picker: ^11.0.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

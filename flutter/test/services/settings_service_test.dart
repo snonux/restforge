@@ -115,6 +115,17 @@ void main() {
   });
 
   group('the secret/metadata split', () {
+    test('an empty secret never overwrites a stored one', () async {
+      await settings.saveBackends([
+        const Backend(name: 'homelab', baseUrl: 'https://h/', secret: 'KEEP-ME'),
+      ]);
+      await settings.saveBackends([
+        const Backend(name: 'homelab', baseUrl: 'https://h/'),
+      ]);
+
+      expect((await settings.loadBackends()).single.secret, 'KEEP-ME');
+    });
+
     test('the secret comes back from loadBackends', () async {
       await settings.saveBackends([
         const Backend(name: 'homelab', baseUrl: 'https://h/', secret: 'SECRET-VALUE'),
@@ -258,6 +269,15 @@ void main() {
     test('a relative base URL is reported', () {
       final backend = SettingsService.normalise({'name': 'a', 'baseUrl': '/x/', 'secret': 's'});
       expect(SettingsService.validate(backend), contains('absolute'));
+    });
+
+    test('validateAddress does not ask for a secret', () {
+      final backend = SettingsService.normalise({'name': 'a', 'baseUrl': 'https://h/'});
+      expect(SettingsService.validateAddress(backend), isNull);
+      expect(
+        SettingsService.validateAddress(SettingsService.normalise({'baseUrl': 'https://h/'})),
+        'Name is required',
+      );
     });
 
     test('a complete backend validates', () {
