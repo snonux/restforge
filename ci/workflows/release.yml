@@ -1,0 +1,129 @@
+# A pushed vX.Y.Z tag: build the signed Android release APKs (one per ABI) and
+# attach them to the GitHub release of that tag. snonux/fdroid picks them up
+# from there (within six hours, or at once when FDROID_DISPATCH_TOKEN is set)
+# together with the store listing in flutter/fastlane/ at the same tag.
+#
+# Signing uses the same release key as a local `just flutter build-apk` with
+# flutter/android/key.properties, so an APK from here updates a sideloaded
+# install and the other way round. Secrets (see AGENTS.md, "Versioning"):
+# ANDROID_KEYSTORE (base64 of the keystore), ANDROID_KEY_ALIAS,
+# ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_PASSWORD; FDROID_DISPATCH_TOKEN is
+# optional.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Rebuild the APKs of a tag that already exists, e.g. after fixing a secret.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build, e.g. v0.7.0
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+
+env:
+  FLUTTER_VERSION: 3.47.5
+  TAG: ${{ inputs.tag || github.ref_name }}
+  FDROID_DISPATCH_TOKEN: ${{ secrets.FDROID_DISPATCH_TOKEN }}
+
+jobs:
+  apk:
+    name: Signed APKs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: flutter
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: The tag matches pubspec.yaml
+        run: |
+          version=$(sed -n 's/^version: *\([^+]*\).*/\1/p' pubspec.yaml)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match version $version in flutter/pubspec.yaml"
+            exit 1
+          fi
+
+      - name: Restore the release key
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE" ] || [ -z "$ANDROID_KEY_ALIAS" ] || \
+             [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::The ANDROID_* signing secrets are not all set; see AGENTS.md"
+            exit 1
+          fi
+          keystore="$RUNNER_TEMP/release.jks"
+          echo "$ANDROID_KEYSTORE" | base64 -d > "$keystore"
+          chmod 600 "$keystore"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$keystore" "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD" \
+            > android/key.properties
+          chmod 600 android/key.properties
+
+      # Same as `just build-apk`. Flutter numbers the split APKs
+      # abi * 1000 + build number (armeabi-v7a 1, arm64-v8a 2, x86_64 4), so
+      # arm64 outranks armeabi-v7a and F-Droid offers each phone the right one.
+      - name: flutter build apk --split-per-abi
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi
+
+      - name: Signed with the release key, not the debug key
+        run: |
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          for apk in build/app/outputs/flutter-apk/app-*-release.apk; do
+            certs=$("$apksigner" verify --print-certs "$apk")
+            echo "$apk: $certs"
+            if echo "$certs" | grep -q 'CN=Android Debug'; then
+              echo "::error::$apk is signed with the debug key"
+              exit 1
+            fi
+          done
+
+      - name: Attach the APKs to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apks=()
+          for apk in build/app/outputs/flutter-apk/app-*-release.apk; do
+            abi=$(basename "$apk" | sed -E 's/^app-(.*)-release\.apk$/\1/')
+            cp "$apk" "restforge-$TAG-$abi.apk"
+            apks+=("restforge-$TAG-$abi.apk")
+          done
+          # A release written by hand before the tag was pushed keeps its notes.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" "${apks[@]}" --clobber
+
+      - name: Refresh the F-Droid repo now
+        if: env.FDROID_DISPATCH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.FDROID_DISPATCH_TOKEN }}
+        run: gh api repos/snonux/fdroid/dispatches -f event_type=app-release
+
+      - name: Forget the release key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks" android/key.properties

@@ -104,6 +104,15 @@ just -f ../pebble/Justfile fixture      # :8731, secret "open-sesame"
 On a physical Android device, `localhost` is the phone; use the workstation's
 LAN address, or `adb reverse tcp:8731 tcp:8731`.
 
+## Install from F-Droid
+
+Add the repository <https://snonux.github.io/fdroid/repo> in F-Droid (the
+one-tap link and fingerprint are in
+[snonux/fdroid](https://github.com/snonux/fdroid)) and install RESTForge
+from there; F-Droid then keeps it updated. It serves the signed APKs of each
+tagged release, built by `.github/workflows/release.yml` (see
+[../AGENTS.md](../AGENTS.md), "Versioning").
+
 ## Release builds
 
 Flutter's Dart AOT compiler emits ARM machine code directly from x86_64 — no
