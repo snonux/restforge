@@ -142,3 +142,46 @@ never into a query string, which would put it in the server's access log and,
 behind a reverse proxy, the proxy's log too. Secrets are stored in
 `flutter_secure_storage` (Android Keystore-backed); the rest of a backend
 definition is an ordinary preference.
+
+## Backing up and restoring settings
+
+Everything the app stores — every backend with its secret, and every saved
+shortcut — can be written to one file and read back, from the home screen's
+overflow menu (**⋮ → Export settings / Import settings**). Use it before an
+uninstall wipes the app's data, for example when moving from a debug build to
+the F-Droid build, which is signed with a different key and cannot be
+installed over it.
+
+- **Export** asks where to save `restforge-settings-YYYYMMDD-HHMM.json`
+  (Android's own file dialog: Downloads, a USB stick, a cloud drive). **The
+  file holds every secret in plain text**; the app says so before writing it.
+  Keep it somewhere only you can read, and delete it once you have restored.
+- **Import** reads such a file and, after asking, **replaces** all backends
+  and shortcuts with the ones in it — it does not merge. A file that is not a
+  RESTForge settings backup, comes from a newer RESTForge than this one, or
+  holds an entry the app could not use is refused as a whole, with the
+  reason, and nothing changes.
+
+The file is versioned JSON:
+
+```json
+{
+  "app": "org.buetow.restforge",
+  "format": "restforge-settings",
+  "formatVersion": 1,
+  "exportedAt": "2026-09-26T10:00:00.000Z",
+  "backends": [
+    {"name": "…", "baseUrl": "https://…/", "authHeader": "X-API-Key",
+     "secret": "…", "startRel": ""}
+  ],
+  "shortcuts": [
+    {"label": "…", "backendName": "…", "baseUrl": "https://…/",
+     "kind": "action", "holder": "https://…", "name": "…", "href": ""}
+  ]
+}
+```
+
+Keys the app does not know are ignored on import, so a file written by a
+later version that only added fields still imports. The Pebble watchapp and
+the terminal client keep their own settings in their own formats; this file
+is the Android app's alone.

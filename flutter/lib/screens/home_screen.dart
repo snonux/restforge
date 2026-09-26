@@ -31,12 +31,26 @@
 /// then pushes `DocumentScreen` with it — mirrors `session.js`'s `runQuick`
 /// deciding, before anything is shown, whether there is a document to show
 /// at all (see [QuickRunOutcome.backendMissing]).
+///
+/// **Export and import settings** live in the AppBar's overflow menu, here
+/// rather than in the backend editor, because a backup is both lists this
+/// screen shows — backends and shortcuts — and because the editor holds
+/// unsaved edits an import would have to either clobber or be clobbered by.
+/// Both go through [BackupService] (what goes in the file, what is refused,
+/// replace-not-merge) and [BackupFiles] (the platform file dialog); this
+/// screen only asks first and reports after. Export warns that the file
+/// holds every secret in plain text; import names what it is about to
+/// replace and waits for a yes. A refused file is explained in a dialog, not
+/// a snackbar, because the reason is the whole answer.
 library;
 
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../models/result.dart';
+import '../services/backup_files.dart';
+import '../services/backup_service.dart';
 import '../services/http_service.dart';
 import '../services/quick_service.dart';
 import '../services/session.dart';
@@ -50,6 +64,7 @@ class HomeScreen extends StatefulWidget {
     this.settingsService,
     this.quickService,
     this.httpService,
+    this.backupFiles,
   });
 
   /// Overridden in widget tests with a [SettingsService] wired to fakes
@@ -72,6 +87,11 @@ class HomeScreen extends StatefulWidget {
   /// the same way [settingsService] and [quickService] are.
   final HttpService? httpService;
 
+  /// Where export writes and import reads. Overridden in widget tests with
+  /// an in-memory fake; the running app gets the platform file dialog
+  /// ([PickerBackupFiles]).
+  final BackupFiles? backupFiles;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -81,6 +101,12 @@ class _HomeScreenState extends State<HomeScreen> {
       widget.settingsService ?? SettingsService();
   late final QuickService _quick =
       widget.quickService ?? QuickService(settings: _settings);
+  late final BackupService _backup = BackupService(
+    settings: _settings,
+    quick: _quick,
+  );
+  late final BackupFiles _files =
+      widget.backupFiles ?? const PickerBackupFiles();
   late Future<List<Backend>> _backendsFuture;
   late Future<List<_QuickRow>> _quickFuture;
 
@@ -130,10 +156,14 @@ class _HomeScreenState extends State<HomeScreen> {
     ];
   }
 
+  /// Opens the backend editor on this screen's own [SettingsService], so the
+  /// editor and the picker (and a test's injected fakes) share one store.
   Future<void> _openEditor() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const SettingsScreen()),
+      MaterialPageRoute(
+        builder: (_) => SettingsScreen(settingsService: _settings),
+      ),
     );
     if (!mounted) {
       return;
@@ -236,6 +266,146 @@ class _HomeScreenState extends State<HomeScreen> {
     await _visit(session);
   }
 
+  /// Writes every setting to a file the user picks — after saying plainly
+  /// that the file will hold their secrets. See the module comment.
+  Future<void> _exportSettings() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final go = await _ask(
+      key: const Key('confirm-export'),
+      title: 'Export settings?',
+      body:
+          'The backup holds every backend, every shortcut and every secret '
+          '(API key) in plain text. Keep it somewhere only you can read, and '
+          'delete it once you no longer need it.',
+      action: 'Export',
+    );
+    if (!go || !mounted) {
+      return;
+    }
+    final backup = await _backup.current();
+    final saved = await _files.save(
+      BackupService.suggestedFileName(DateTime.now()),
+      BackupService.encode(backup),
+    );
+    if (!mounted) {
+      return;
+    }
+    switch (saved) {
+      case Ok(value: null):
+        return;
+      case Ok():
+        messenger.showSnackBar(
+          SnackBar(content: Text('Exported ${_describe(backup)}')),
+        );
+      case Err(:final failure):
+        messenger.showSnackBar(SnackBar(content: Text(failure.message)));
+    }
+  }
+
+  /// Replaces every setting with a backup file's — after checking the file
+  /// and naming what it replaces. See the module comment.
+  Future<void> _importSettings() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final opened = await _files.open();
+    if (!mounted) {
+      return;
+    }
+    final String text;
+    switch (opened) {
+      case Ok(value: null):
+        return;
+      case Ok(:final value):
+        text = value!;
+      case Err(:final failure):
+        await _tell('Cannot import', failure.message);
+        return;
+    }
+    final SettingsBackup incoming;
+    switch (BackupService.parse(text)) {
+      case Ok(:final value):
+        incoming = value;
+      case Err(:final failure):
+        await _tell('Cannot import', failure.message);
+        return;
+    }
+    final existing = await _backup.current();
+    if (!mounted) {
+      return;
+    }
+    final go = await _ask(
+      key: const Key('confirm-import'),
+      title: 'Replace all settings?',
+      body:
+          'Your ${_describe(existing)} will be replaced by the '
+          '${_describe(incoming)} in the backup, secrets included. This '
+          'cannot be undone.',
+      action: 'Replace',
+    );
+    if (!go || !mounted) {
+      return;
+    }
+    final applied = await _backup.apply(incoming);
+    if (!mounted) {
+      return;
+    }
+    _reloadBackends();
+    switch (applied) {
+      case Ok():
+        messenger.showSnackBar(
+          SnackBar(content: Text('Imported ${_describe(incoming)}')),
+        );
+      case Err(:final failure):
+        await _tell('Import failed', failure.message);
+    }
+  }
+
+  static String _describe(SettingsBackup backup) {
+    String count(int n, String noun) => '$n $noun${n == 1 ? '' : 's'}';
+    return '${count(backup.backends.length, 'backend')} and '
+        '${count(backup.shortcuts.length, 'shortcut')}';
+  }
+
+  Future<bool> _ask({
+    required Key key,
+    required String title,
+    required String body,
+    required String action,
+  }) async {
+    final answer = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: key,
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+    return answer ?? false;
+  }
+
+  Future<void> _tell(String title, String body) => showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: Text(body),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('OK'),
+        ),
+      ],
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -246,6 +416,27 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: const Icon(Icons.settings),
             tooltip: 'Backends',
             onPressed: _openEditor,
+          ),
+          PopupMenuButton<VoidCallback>(
+            key: const Key('settings-menu'),
+            tooltip: 'More',
+            onSelected: (run) => run(),
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: _exportSettings,
+                child: const ListTile(
+                  leading: Icon(Icons.upload_file),
+                  title: Text('Export settings'),
+                ),
+              ),
+              PopupMenuItem(
+                value: _importSettings,
+                child: const ListTile(
+                  leading: Icon(Icons.download),
+                  title: Text('Import settings'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
