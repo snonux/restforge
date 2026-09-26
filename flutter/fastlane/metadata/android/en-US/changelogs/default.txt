@@ -1,1 +1,1 @@
-Maintenance release, built and signed by the automated release pipeline and published to the snonux F-Droid repository.
+Maintenance release. Documentation now explains how to install RESTForge from the snonux F-Droid repository.
