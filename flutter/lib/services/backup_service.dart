@@ -39,11 +39,14 @@
 /// **Import is all or nothing.** [parse] refuses the whole file — with a
 /// reason a person can act on — when it is not ours, is from a newer format
 /// than this build understands, or holds an entry the stores would silently
-/// drop (a backend with no name, a shortcut with nowhere to go, more than
-/// the stores hold). Restoring half a backup and calling it done is exactly
-/// the kind of quiet partial answer the rest of this app refuses to give.
-/// Keys it does not know are ignored, so a file from a later version that
-/// only *added* fields still imports.
+/// drop or confuse (a backend with no name, two backends with the same name
+/// and base URL — they would share one secret — a shortcut with nowhere to
+/// go, more than the stores hold). Restoring half a backup and calling it
+/// done is exactly the kind of quiet partial answer the rest of this app
+/// refuses to give. Keys it does not know are ignored, so a file from a
+/// later version that only *added* fields still imports. A backend whose
+/// secret is empty in the file (its key could not be read when the backup
+/// was made) is imported without overwriting a key already stored for it.
 library;
 
 import 'dart:convert';
@@ -211,6 +214,18 @@ class BackupService {
       if (problem != null) {
         return _refuse('Backend ${i + 1} in this backup: $problem.');
       }
+      // A secret is filed under name and base URL together, so two backends
+      // sharing both would share one key and one of them would silently get
+      // the other's secret.
+      final twin = backends.indexWhere(
+        (b) => b.name == backend.name && b.baseUrl == backend.baseUrl,
+      );
+      if (twin != -1) {
+        return _refuse(
+          'Backends ${twin + 1} and ${i + 1} in this backup have the same '
+          'name and base URL.',
+        );
+      }
       backends.add(backend);
     }
 
@@ -232,27 +247,72 @@ class BackupService {
   }
 
   /// Replaces every stored setting with [backup] — see the module comment on
-  /// why replace, not merge. Backends first, then shortcuts; if the second
-  /// write fails the first is rolled back to what was there before, so a
-  /// failed import leaves the app as it found it rather than half restored.
+  /// why replace, not merge. Backends first, then shortcuts; if either write
+  /// fails, both are rolled back to what was there before, so a failed
+  /// import leaves the app as it found it rather than half restored. If the
+  /// rollback fails too, the message says so, because then the app is in
+  /// neither state and the user needs to check it.
+  ///
   /// Removing a backend here also removes its secret, exactly as deleting it
-  /// in the editor does ([SettingsService.saveBackends]).
+  /// in the editor does — but only once both writes have succeeded
+  /// ([SettingsService.dropOrphanedSecrets]), so a rollback never has to
+  /// restore a secret it may not have been able to read. A backend whose
+  /// secret is empty — in the backup, or in the snapshot a rollback restores
+  /// because it could not be read — keeps whatever secret is already stored
+  /// for it: [SettingsService.saveBackends] never writes an empty one.
   Future<Result<SettingsBackup>> apply(SettingsBackup backup) async {
     final before = await current();
 
-    final savedBackends = await _settings.saveBackends(backup.backends);
+    // The replaced backends' secrets stay until both writes have worked, so
+    // a rollback can still find them — including any it could not read.
+    final savedBackends = await _settings.saveBackends(
+      backup.backends,
+      keepOrphanedSecrets: true,
+    );
     if (savedBackends case Err(:final failure)) {
-      await _settings.saveBackends(before.backends);
-      return Err(failure);
+      return Err(await _rollBack(failure, before, shortcutsTouched: false));
     }
     final savedShortcuts = await _quick.save(backup.shortcuts);
     if (savedShortcuts case Err(:final failure)) {
-      await _settings.saveBackends(before.backends);
-      await _quick.save(before.shortcuts);
-      return Err(failure);
+      return Err(await _rollBack(failure, before, shortcutsTouched: true));
     }
+    await _settings.dropOrphanedSecrets(before.backends);
     debugPrint('backup: restored $backup');
     return Ok(backup);
+  }
+
+  /// Puts [before] back after a failed import and returns the failure to
+  /// report: [cause] as it was when the rollback worked, or [cause] plus
+  /// what the rollback could not undo when it did not.
+  Future<Failure> _rollBack(
+    Failure cause,
+    SettingsBackup before, {
+    required bool shortcutsTouched,
+  }) async {
+    final problems = <String>[];
+    if (await _settings.saveBackends(before.backends) case Err(
+      :final failure,
+    )) {
+      problems.add(failure.message);
+    }
+    if (shortcutsTouched) {
+      if (await _quick.save(before.shortcuts) case Err(:final failure)) {
+        problems.add(failure.message);
+      }
+    }
+    if (problems.isEmpty) {
+      return Failure(
+        kind: cause.kind,
+        message: 'Import failed; your settings are unchanged. ${cause.message}',
+      );
+    }
+    return Failure(
+      kind: cause.kind,
+      message:
+          'Import failed (${cause.message}), and putting the previous '
+          'settings back failed too (${problems.join('; ')}). Check your '
+          'backends and shortcuts before relying on them.',
+    );
   }
 
   static Result<SettingsBackup> _refuse(String message) =>

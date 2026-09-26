@@ -35,7 +35,30 @@ abstract class BackupFiles {
 
 /// [BackupFiles] through the platform file dialog — see the module comment.
 class PickerBackupFiles implements BackupFiles {
-  const PickerBackupFiles();
+  PickerBackupFiles({
+    bool? clearsPickerCopies,
+    @visibleForTesting Future<FilePickerResult?> Function()? pick,
+    @visibleForTesting Future<bool?> Function()? clearPickerCopies,
+  }) : _clearsPickerCopies = clearsPickerCopies ?? Platform.isAndroid,
+       _pick = pick ?? _pickWithPlatformDialog,
+       _clearPickerCopies = clearPickerCopies ?? FilePicker.clearTemporaryFiles;
+
+  /// Whether [open] has to delete the plugin's copy of the picked file. On
+  /// Android file_picker copies whatever was picked into
+  /// `cacheDir/file_picker/<timestamp>/` — even with `withData` — and never
+  /// removes it, which for a backup would leave every secret in plain text
+  /// in the app's cache. Elsewhere it reads the original in place and has
+  /// nothing to clear (and `clearTemporaryFiles` is unimplemented on Linux).
+  /// Saving writes straight to the chosen document and leaves no copy.
+  final bool _clearsPickerCopies;
+  final Future<FilePickerResult?> Function() _pick;
+  final Future<bool?> Function() _clearPickerCopies;
+
+  // FileType.any rather than a .json filter: several Android document
+  // providers do not map .json to a MIME type and would grey the file out.
+  // A wrong file is refused by BackupService.parse, with a reason.
+  static Future<FilePickerResult?> _pickWithPlatformDialog() =>
+      FilePicker.pickFiles(dialogTitle: 'Import settings', withData: true);
 
   @override
   Future<Result<String?>> save(String fileName, String contents) async {
@@ -63,13 +86,7 @@ class PickerBackupFiles implements BackupFiles {
   @override
   Future<Result<String?>> open() async {
     try {
-      // FileType.any rather than a .json filter: several Android document
-      // providers do not map .json to a MIME type and would grey the file
-      // out. A wrong file is refused by BackupService.parse, with a reason.
-      final picked = await FilePicker.pickFiles(
-        dialogTitle: 'Import settings',
-        withData: true,
-      );
+      final picked = await _pick();
       if (picked == null || picked.files.isEmpty) {
         return const Ok(null);
       }
@@ -98,6 +115,27 @@ class PickerBackupFiles implements BackupFiles {
           kind: FailureKind.config,
           message: 'Could not read the file: $error',
         ),
+      );
+    } finally {
+      await _deletePickerCopies();
+    }
+  }
+
+  /// See [_clearsPickerCopies]. Runs after every pick, read or not, and
+  /// removes the plugin's whole cache folder, so a copy left behind by an
+  /// earlier pick that never got this far goes too. A failure to clear is
+  /// logged, not reported: the import itself is unaffected.
+  Future<void> _deletePickerCopies() async {
+    if (!_clearsPickerCopies) {
+      return;
+    }
+    try {
+      if (await _clearPickerCopies() != true) {
+        debugPrint('backup: the picked file\'s cache copy was not cleared');
+      }
+    } catch (error) {
+      debugPrint(
+        'backup: could not clear the picked file\'s cache copy: $error',
       );
     }
   }

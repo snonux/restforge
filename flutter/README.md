@@ -159,8 +159,14 @@ installed over it.
 - **Import** reads such a file and, after asking, **replaces** all backends
   and shortcuts with the ones in it — it does not merge. A file that is not a
   RESTForge settings backup, comes from a newer RESTForge than this one, or
-  holds an entry the app could not use is refused as a whole, with the
-  reason, and nothing changes.
+  holds an entry the app could not use (or two backends with the same name
+  and base URL) is refused as a whole, with the reason, and nothing changes.
+  A backend whose secret is empty in the file keeps the secret already stored
+  for it; if the app could not read a secret when exporting, the export
+  dialog names that backend.
+- On Android the file picker copies the picked file into the app's cache;
+  the app deletes that copy straight after reading it, so no plain-text
+  secrets are left behind.
 
 The file is versioned JSON:
 

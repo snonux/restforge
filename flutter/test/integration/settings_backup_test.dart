@@ -365,6 +365,34 @@ void main() {
       expect(files.saveCalls, 0);
     });
 
+    testWidgets('export names a backend whose secret could not be read', (
+      tester,
+    ) async {
+      final settings = await seeded(tester);
+      // Stored without a secret: it loads with an empty one, exactly like a
+      // secret the Keystore could not read.
+      await settings.saveBackends([
+        const Backend(name: 'Keep me', baseUrl: _betaBase, secret: 'k'),
+        const Backend(name: 'Keyless', baseUrl: 'https://k.test/'),
+      ]);
+      await openMenu(tester, 'Export settings');
+      expect(
+        find.textContaining(
+          'No secret could be read for "Keyless"; the backup will not '
+          'include one for it.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('export says nothing extra when every secret was read', (
+      tester,
+    ) async {
+      await seeded(tester);
+      await openMenu(tester, 'Export settings');
+      expect(find.textContaining('No secret could be read'), findsNothing);
+    });
+
     testWidgets('cancelling the save dialog reports nothing', (tester) async {
       await seeded(tester);
       files.cancelSave = true;

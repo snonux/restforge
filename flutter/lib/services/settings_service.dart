@@ -311,12 +311,21 @@ class SettingsService {
   /// persisted, normalised list on success; a request that failed at the
   /// platform layer (a full disk, a locked Keystore) comes back as an [Err]
   /// rather than a partial, silently-inconsistent write.
-  Future<Result<List<Backend>>> saveBackends(List<Backend> backends) async {
+  ///
+  /// [keepOrphanedSecrets] leaves the secrets of backends that are no longer
+  /// present where they are, for a caller that may still need to put those
+  /// backends back — a settings import that has not finished yet, whose
+  /// rollback could not restore a secret it was unable to read beforehand.
+  /// Such a caller calls [dropOrphanedSecrets] once it is done.
+  Future<Result<List<Backend>>> saveBackends(
+    List<Backend> backends, {
+    bool keepOrphanedSecrets = false,
+  }) async {
     final clean = _capAndFilter(backends);
     try {
       final previous = await _loadMetadata();
       await _persistMetadata(clean);
-      await _persistSecrets(clean, previous);
+      await _persistSecrets(clean, keepOrphanedSecrets ? const [] : previous);
     } catch (error) {
       return Err(
         Failure(
@@ -357,7 +366,17 @@ class SettingsService {
     List<Backend> clean,
     List<Backend> previous,
   ) async {
+    // An empty secret never overwrites a stored one. The editor cannot
+    // produce one (validate requires a secret), so an empty value here comes
+    // from a settings import of a backend whose key could not be read when
+    // the backup was made, or from restoring a snapshot whose secret was
+    // unreadable at the time — in both cases the key already stored under
+    // this name and base URL is the best one there is, and '' would destroy
+    // it. A backend that is no longer present still loses its secret below.
     for (final backend in clean) {
+      if (backend.secret.isEmpty) {
+        continue;
+      }
       await _secrets.write(_secretKey(backend), backend.secret);
     }
     final keepKeys = clean.map(_secretKey).toSet();
@@ -366,6 +385,24 @@ class SettingsService {
       if (!keepKeys.contains(oldKey)) {
         await _secrets.delete(oldKey);
       }
+    }
+  }
+
+  /// Deletes the secret of every backend in [formerly] that is no longer
+  /// stored — the cleanup [saveBackends] skipped when asked to keep orphaned
+  /// secrets. Best effort: a secret left behind is unreachable from the app,
+  /// so a failure here is logged rather than reported.
+  Future<void> dropOrphanedSecrets(List<Backend> formerly) async {
+    try {
+      final keepKeys = (await _loadMetadata()).map(_secretKey).toSet();
+      for (final old in formerly) {
+        final oldKey = _secretKey(old);
+        if (!keepKeys.contains(oldKey)) {
+          await _secrets.delete(oldKey);
+        }
+      }
+    } catch (error) {
+      debugPrint('settings: could not delete orphaned secrets: $error');
     }
   }
 

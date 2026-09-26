@@ -39,6 +39,17 @@ class _InMemorySecretStore implements SecretStore {
 class _FailingWriteSecretStore extends _InMemorySecretStore {
   bool failWrites = false;
 
+  /// Reads throw while set — a Keystore that is only temporarily unreadable.
+  bool failReads = false;
+
+  @override
+  Future<String?> read(String key) async {
+    if (failReads) {
+      throw Exception('keystore busy');
+    }
+    return super.read(key);
+  }
+
   @override
   Future<void> write(String key, String value) async {
     if (failWrites) {
@@ -55,9 +66,16 @@ class _FailingQuickService extends QuickService {
 
   bool failSaves = false;
 
+  /// Fails only this many saves, then works again — so the import's write
+  /// fails but the rollback's succeeds.
+  int failNextSaves = 0;
+
   @override
   Future<Result<List<QuickItem>>> save(List<QuickItem> list) async {
-    if (failSaves) {
+    if (failSaves || failNextSaves > 0) {
+      if (failNextSaves > 0) {
+        failNextSaves--;
+      }
       return const Err(Failure(kind: FailureKind.config, message: 'disk full'));
     }
     return super.save(list);
@@ -120,6 +138,11 @@ Map<String, dynamic> _validFile() =>
 
 String _failureOf(Result<SettingsBackup> result) => switch (result) {
   Ok() => fail('expected the file to be refused'),
+  Err(:final failure) => failure.message,
+};
+
+String _failureOfApply(Result<SettingsBackup> result) => switch (result) {
+  Ok() => fail('expected the import to fail'),
   Err(:final failure) => failure.message,
 };
 
@@ -316,6 +339,77 @@ void main() {
       ]);
     });
 
+    test('a rolled-back import says the settings are unchanged', () async {
+      await seed();
+      quick.failNextSaves = 1;
+      final result = await backup.apply(
+        const SettingsBackup(backends: [], shortcuts: []),
+      );
+      expect(
+        _failureOfApply(result),
+        allOf(contains('your settings are unchanged'), contains('disk full')),
+      );
+      expect(await settings.loadBackends(), _backends);
+      expect(await quick.load(), _shortcuts);
+    });
+
+    test('a rollback that fails too is reported, not hidden', () async {
+      await seed();
+      quick.failSaves = true;
+      final result = await backup.apply(
+        const SettingsBackup(backends: [], shortcuts: []),
+      );
+      expect(
+        _failureOfApply(result),
+        allOf(
+          contains('putting the previous settings back failed too'),
+          contains('Check your backends and shortcuts'),
+        ),
+      );
+    });
+
+    test('a rollback never blanks a secret that was only unreadable', () async {
+      await seed();
+      // The snapshot taken before the import cannot read any secret, so it
+      // holds '' for each; restoring it must not write those over the keys.
+      secrets.failReads = true;
+      quick.failNextSaves = 1;
+      final result = await backup.apply(
+        const SettingsBackup(
+          backends: [
+            Backend(name: 'New', baseUrl: 'https://new.test/', secret: 'n'),
+          ],
+          shortcuts: [],
+        ),
+      );
+      expect(result, isA<Err<SettingsBackup>>());
+      secrets.failReads = false;
+      expect(await settings.loadBackends(), _backends);
+      expect(secrets.data.values, isNot(contains('n')));
+    });
+
+    test('an empty secret in the file keeps the stored one', () async {
+      await seed();
+      final file = _validFile();
+      for (final entry in file['backends'] as List) {
+        entry['secret'] = '';
+      }
+      final parsed = _valueOf(BackupService.parse(jsonEncode(file)));
+      expect(await backup.apply(parsed), isA<Ok<SettingsBackup>>());
+      expect(await settings.loadBackends(), _backends);
+    });
+
+    test('an empty secret for a new backend stores no secret', () async {
+      await backup.apply(
+        const SettingsBackup(
+          backends: [Backend(name: 'Keyless', baseUrl: 'https://k.test/')],
+          shortcuts: [],
+        ),
+      );
+      expect(secrets.data, isEmpty);
+      expect((await settings.loadBackends()).single.secret, '');
+    });
+
     test('a failed secret write leaves the backend list as it was', () async {
       await seed();
       secrets.failWrites = true;
@@ -459,6 +553,26 @@ void main() {
       expect(
         _failureOf(BackupService.parse(jsonEncode(file))),
         contains('Backend 2 in this backup: Base URL must be absolute'),
+      );
+    });
+
+    test('two backends with the same name and base URL', () {
+      final file = _validFile();
+      final backends = file['backends'] as List;
+      backends.add({...backends.first as Map, 'secret': 'other'});
+      expect(
+        _failureOf(BackupService.parse(jsonEncode(file))),
+        'Backends 1 and 3 in this backup have the same name and base URL.',
+      );
+    });
+
+    test('the same name at two base URLs is two backends', () {
+      final file = _validFile();
+      final backends = file['backends'] as List;
+      backends.add({...backends.first as Map, 'baseUrl': 'https://b.test/'});
+      expect(
+        _valueOf(BackupService.parse(jsonEncode(file))).backends,
+        hasLength(3),
       );
     });
 

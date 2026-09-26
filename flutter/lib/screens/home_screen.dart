@@ -105,8 +105,7 @@ class _HomeScreenState extends State<HomeScreen> {
     settings: _settings,
     quick: _quick,
   );
-  late final BackupFiles _files =
-      widget.backupFiles ?? const PickerBackupFiles();
+  late final BackupFiles _files = widget.backupFiles ?? PickerBackupFiles();
   late Future<List<Backend>> _backendsFuture;
   late Future<List<_QuickRow>> _quickFuture;
 
@@ -270,19 +269,34 @@ class _HomeScreenState extends State<HomeScreen> {
   /// that the file will hold their secrets. See the module comment.
   Future<void> _exportSettings() async {
     final messenger = ScaffoldMessenger.of(context);
+    final backup = await _backup.current();
+    if (!mounted) {
+      return;
+    }
+    // A secret that could not be read loads as empty (see
+    // SettingsService.loadBackends); say which backends will be exported
+    // without one rather than let the backup look complete.
+    final keyless = [
+      for (final b in backup.backends)
+        if (b.secret.isEmpty) '"${b.name}"',
+    ];
+    final missing = keyless.isEmpty
+        ? ''
+        : '\n\nNo secret could be read for ${keyless.join(', ')}; the '
+              'backup will not include one for '
+              '${keyless.length == 1 ? 'it' : 'them'}.';
     final go = await _ask(
       key: const Key('confirm-export'),
       title: 'Export settings?',
       body:
           'The backup holds every backend, every shortcut and every secret '
           '(API key) in plain text. Keep it somewhere only you can read, and '
-          'delete it once you no longer need it.',
+          'delete it once you no longer need it.$missing',
       action: 'Export',
     );
     if (!go || !mounted) {
       return;
     }
-    final backup = await _backup.current();
     final saved = await _files.save(
       BackupService.suggestedFileName(DateTime.now()),
       BackupService.encode(backup),
