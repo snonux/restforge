@@ -1,0 +1,1 @@
+Generic Siren hypermedia browser: follow links and run actions of any REST API

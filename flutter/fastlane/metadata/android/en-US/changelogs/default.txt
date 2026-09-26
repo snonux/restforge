@@ -1,0 +1,1 @@
+First release in the snonux F-Droid repository. See the GitHub release for the full notes.

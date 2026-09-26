@@ -112,6 +112,33 @@ skill uses elsewhere; the difference here is that "the project" means all
 three subprojects together, and `bump-version` is the mechanism that keeps
 them together.
 
+### The Android APKs and F-Droid
+
+Pushing the tag starts `.github/workflows/release.yml`, which builds the
+per-ABI release APKs with the release key and attaches them to the GitHub
+release of the tag (a release written by hand beforehand keeps its notes).
+The [snonux F-Droid repository](https://github.com/snonux/fdroid) serves
+them from there, with the store listing in `flutter/fastlane/` at the tag.
+Before tagging, rewrite
+`flutter/fastlane/metadata/android/en-US/changelogs/default.txt` with a few
+lines (at most 500 characters) on what changed: F-Droid shows it as
+*What's new*.
+
+The workflow needs these repository secrets, from
+`flutter/android/key.properties` and the keystore it points at. It must be
+the key the installed app is signed with, or F-Droid cannot update it:
+
+```sh
+base64 -w0 path/to/release.jks | gh secret set ANDROID_KEYSTORE
+gh secret set ANDROID_KEY_ALIAS          # keyAlias
+gh secret set ANDROID_KEYSTORE_PASSWORD  # storePassword
+gh secret set ANDROID_KEY_PASSWORD       # keyPassword
+```
+
+An optional `FDROID_DISPATCH_TOKEN` (a fine-grained token with *Contents:
+read and write* on snonux/fdroid) refreshes the F-Droid repository right
+away instead of within six hours.
+
 ## Commit policy
 
 Per-app commit rules are in each app's own AGENTS.md. Repo-wide: never commit

@@ -1,0 +1,10 @@
+RESTForge is a generic Siren hypermedia browser. Point it at an API and it renders whatever that API offers: properties, sub-entities, links and actions. Follow a link and it fetches it. Tap an action and, after confirming, it performs it, then re-reads the document to see what changed. If the work outlives the request, it keeps watching until the server says it is done.
+
+It knows Siren and HTTP and nothing about any particular server, so it works with any API that speaks Siren.
+
+* Renders whatever a document offers, in the order the server sent it.
+* Follows links by the href the server put in the document; it never builds a URL.
+* Asks before acting: any method other than GET, HEAD, OPTIONS or TRACE needs a confirmation.
+* Re-reads after acting, and watches long-running jobs until they finish.
+* Keeps the last good document on screen when a request fails, with the reason laid over it.
+* Saves shortcuts to the links and actions you use often.
